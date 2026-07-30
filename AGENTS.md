@@ -33,6 +33,21 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
 "corrected" breaks the build. If live behaviour really changed, update this registry and
 `tests/test_contracts.py` **together**, in the same commit.
 
+**Which of these are actually protected, and which are only written down.** Task 52 asked for
+a citation on every bullet naming the test that pins it. That is **partly done**: of the 85
+bolded facts here, roughly a fifth cite a test, and the rest do not — not because they are
+unpinned, but because nobody has traced them. **Do not read an uncited bullet as unprotected;
+read it as unverified-either-way.** Most are in fact covered by `test_catalog.py`,
+`test_ucp.py`, `test_gemini.py`, `test_devices.py`, `test_brujula_theme.py`,
+`test_huella_theme.py` and the two Strava suites — the gap is that a reader cannot tell
+without going and looking, which is the whole point of the citation.
+
+Where a citation says **Unpinned**, that has been checked and is a real gap. Where it names a
+`live`-marked test or a script, the pin exists but **does not run in CI** — a distinction
+worth keeping, because a fact protected only by something nobody runs is protected only in
+principle. Facts touched on 30 Jul 2026 were cited as they were re-measured; the remainder is
+the outstanding work.
+
 ### COROS UCP and pricing
 
 - **Endpoint:** `https://coros.com.co/api/ucp/mcp`, `Content-Type: application/json`, no
@@ -403,11 +418,11 @@ it cost an afternoon and it presents as a rate limit, body and all.
 - **It is the ClientHello, and impersonating it is the fix.** `curl_cffi` with
   `impersonate="chrome"` → `200`, 297 399 B. The *same library* with no impersonation →
   `403` and a 6 924 B Cloudflare challenge page. `requests` and `httpx` behave identically
-  because they share Python's `ssl`-module fingerprint.
+  because they share Python's `ssl`-module fingerprint. — *Pinned by `tests/test_catalog.py::TestTheStorefrontClassifiesTheFingerprint` and `tests/test_integration.py::TestTheStorefrontFingerprintIsNotASingleConstant`. The second exists because the first cannot fail on a laptop: measured 30 Jul 2026, `chrome` reads the catalogue from a residential IP and gets `429` from the production VPS in the same minute `safari` reads it from that same IP.*
 - **`impersonate` is load-bearing and the two failures must stay apart.** `429` is a
   throttle and sets `rate_limited` on the `catalog.unavailable` event; `403` is a
   fingerprint problem and must not. Conflating them puts the "COROS refused us" excuse back
-  into `scripts/verify_brujula.py`, which is exactly the bug that suite was written to stop.
+  into `scripts/verify_brujula.py`, which is exactly the bug that suite was written to stop. — *Pinned by `tests/test_catalog.py::TestTheStorefrontClassifiesTheFingerprint::test_every_request_carries_the_impersonation` and, for the 403/429 split and the fallback chain, `TestAnAbsentAnswerIsNotAnEmptyCatalog`.*
 - **Only the storefront is gated. `ucp.py` stays on httpx.** `/api/ucp/mcp` answered `httpx`
   in the same minutes the feed was refusing it — two different limiters, and the UCP one is
   not fingerprinting. Do not unify the clients, for a different reason than this registry
@@ -416,7 +431,7 @@ it cost an afternoon and it presents as a rate limit, body and all.
   measurement carried over from DecaBot and never reproduced here. See `docs/DECISIONS.md`,
   30 Jul, both storefront entries: the first records the measurements and refuses to
   conclude, the second concludes. Two confident intermediate verdicts were wrong; the
-  measurements were not.
+  measurements were not. — *Unpinned: no offline test asserts that `ucp.py` is NOT fingerprint-gated. It rests on the 30 Jul 2026 measurement recorded above, and only a live run would re-establish it.*
 
 ### Rate limits and pacing
 
@@ -532,7 +547,7 @@ below is a fact about `App.__call__` and nothing warns you when it changes.
   simply earlier. Probed: `/oauth/strava/callback?code=…` → our 200 with the query string intact,
   no `code` → our 400 not a static 404, `POST` → 405 (a swallowed path would 404),
   `/oauth/strava/nope` → 404 (the prefix is not a wildcard), and `/`, `/ping` and `/_event/`
-  (101) all still served.
+  (101) all still served. — *Pinned by `tests/test_integration.py::TestTheOAuthCallbackStillOutranksTheFrontendMount` for the registration order, and proved end to end by `make spike-oauth` (14/14 under granian) and in production on 30 Jul 2026 — `?state=garbage` → 303 `/?strava=state`, POST → 405, unknown path → 404. Neither of the last two runs in CI.*
 - **A route registered *after* `rx.App(...)` still wins.** The mount happens inside
   `App.__call__`, which granian invokes per worker boot — not at construction — so
   `api.routes.append(Route(...))` after the `rx.App(...)` line is reachable. Verified live.
@@ -573,7 +588,7 @@ below is a fact about `App.__call__` and nothing warns you when it changes.
   connects, which is the same silent symptom `rxconfig.py` already warns about for `api_url`.
   The default therefore *is* the dev origin, and `BRUJULA_ALLOWED_ORIGINS` /
   `HUELLA_ALLOWED_ORIGINS` **replace** it rather than adding to it — a hosted instance that
-  still trusted localhost would trust every other container on the VPS.
+  still trusted localhost would trust every other container on the VPS. — *Measured in production 30 Jul 2026 on both apps: 101 with no Origin, 101 from the allowed origin, **403** from a foreign one. Unpinned offline — engineio's check needs a running server, so `scripts/smoke_containers.sh` is what re-establishes it.*
 - **The callback still must not answer with a body worth stealing.** CORS is a browser policy,
   not a server one, and the narrowing above is defence in depth rather than the guarantee. The
   callback exchanges the code server-side and answers with a redirect and an empty body, so
