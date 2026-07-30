@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, get_args
 
 import pytest
+from reflex.istate.data import RouterData
 
 from coros_core import devices, evidence, trace
 from coros_core.evidence import Check, EvidenceBundle
@@ -47,6 +48,27 @@ PACE_4_MINOR = 109_900_000
 
 def fresh() -> Any:
     return st.State(_reflex_internal_init=True)
+
+
+def _routed(as_path: str, query: dict[str, str]) -> Any:
+    """A state whose `router` carries a real URL.
+
+    `object.__setattr__` rather than assignment: `router` is an inherited var, so a plain
+    `state.router = …` on a substate with no parent recurses into `None`. The READ path
+    falls through to the instance attribute, which is what the handler under test uses.
+    """
+    state = fresh()
+    router = RouterData.from_router_data(
+        {
+            "headers": {"origin": "http://localhost:3001"},
+            "pathname": "/",
+            "asPath": as_path,
+            "query": query,
+            "token": "",
+        }
+    )
+    object.__setattr__(state, "router", router)
+    return state
 
 
 @pytest.fixture(autouse=True)
@@ -661,19 +683,37 @@ class TestTheCredentialNeverReachesTheState:
         assert key not in st._CONVERSATIONS
         assert state.strava_notice != ""
 
-    def test_the_landing_word_is_the_only_thing_the_callback_hands_over(self) -> None:
+    @pytest.mark.parametrize(
+        ("word", "notice", "error"),
+        (
+            (oauth.OK, True, False),
+            (oauth.DENIED, True, False),
+            (oauth.RATE_LIMITED, False, True),
+            (oauth.BAD_STATE, False, True),
+            ("<script>alert(1)</script>", False, False),
+            ("", False, False),
+        ),
+    )
+    def test_the_landing_word_is_the_only_thing_the_callback_hands_over(
+        self, word: str, notice: bool, error: bool
+    ) -> None:
         """Everything else about the exchange happened server-side. A word out of a closed
-        vocabulary is what crosses, and an invented one is ignored rather than rendered."""
-        state = fresh()
-        state.router_data = {
-            "query": {},
-            "headers": {"origin": "http://localhost:3001"},
-            "pathname": "/",
-            "asPath": "/?strava=<script>alert(1)</script>",
-        }
+        vocabulary is what crosses, and an invented one is ignored rather than rendered.
+
+        The router is built the way `reflex_base/event/processor/base_state_processor.py:
+        353-358` builds it before every handler, off the `router_data` the compiled client
+        sends with every event (`.web/utils/state.js:387-414`, which reads the live search
+        string). That is what puts `?strava=` in front of `on_page_load` at all.
+        """
+        state = _routed(f"/?strava={word}" if word else "/", {"strava": word} if word else {})
         state._read_landing()
 
-        assert state.strava_notice == "" and state.strava_error == ""
+        assert bool(state.strava_notice) is notice
+        assert bool(state.strava_error) is error
+        assert not word or word not in state.strava_notice + state.strava_error, (
+            "the landing word was pasted into the sentence rather than looked up. It comes "
+            "off a URL, and a URL is something anybody can write."
+        )
 
     def test_a_connect_click_on_a_locked_app_starts_no_flow(self, monkeypatch) -> None:
         monkeypatch.setattr(st, "GATE_ON", True)
