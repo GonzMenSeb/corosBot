@@ -6,7 +6,7 @@
 PYPATH := .:packages:apps/brujula:apps/huella
 VENV_PY := ./.venv/bin/python
 PY := PYTHONPATH=$(PYPATH) $(VENV_PY)
-.PHONY: setup check verify doctor fixtures verify-brujula dev-brujula dev-huella clean
+.PHONY: setup check verify doctor fixtures verify-brujula spike-oauth dev-brujula dev-huella clean
 
 setup:
 	python3.12 -m venv .venv
@@ -31,6 +31,12 @@ fixtures:
 verify-brujula:
 	$(PY) scripts/verify_brujula.py
 
+# Builds a throwaway Reflex app and serves it the way the container does, to re-answer
+# "can an OAuth callback route survive the frontend mount" whenever the reflex pin moves.
+# Slow: it runs a full frontend export. Not part of check.
+spike-oauth:
+	$(VENV_PY) scripts/spike_api_transformer.py
+
 # reflex must run with the app directory as cwd: .web/ and reflex.lock/ resolve against
 # it. Ports are pinned per app in each rxconfig.py so both can run at once.
 dev-brujula:
@@ -44,3 +50,11 @@ dev-huella:
 clean:
 	rm -rf apps/*/.states .pytest_cache .playwright-mcp .reflex-*.log
 	find . -path ./.venv -prune -o -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+
+# Agent vs. retrieval-only baseline, offline over fixtures/products.json. Exits non-zero
+# when the baseline wins a metric or the two arms did not spend the same budget. The same
+# harness runs inside `make check` via tests/test_eval_baseline.py; this is the readable
+# report. See docs/EVAL.md.
+.PHONY: eval
+eval:
+	$(PY) scripts/eval_baseline.py $(ARGS)

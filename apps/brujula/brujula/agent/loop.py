@@ -889,16 +889,26 @@ def _blocked(decision: _Decision, bundle: EvidenceBundle, result: TurnResult) ->
         {"kind": decision.advice.kind, "blocking": list(bundle.blocking)},
         "guardrail",
     )
-    missing = [
-        _CHECKS_ES[c.name]
-        for c in bundle.checks
-        if c.outcome != "pass" and c.name in _CHECKS_ES
+    # `fail` and `not_run` are different sentences and the person gets the right one. A check
+    # that RAN and disagreed is not a check nobody could run: saying "me faltó comprobar la
+    # cuenta contra tu presupuesto" about a budget check that returned "nothing fits, the
+    # cheapest APEX 4 is $1.899.000" describes our own reasoning falsely. Every other layer
+    # already draws this line — evidence.py returns None only for `not_run`, and
+    # theme.OUTCOME_COLOR gives `fail` the flag and `not_run` the secondary grey — and this
+    # was the one place that collapsed the two. Found by scripts/eval_baseline.py.
+    failed = [
+        _CHECKS_ES[c.name] for c in bundle.checks if c.outcome == "fail" and c.name in _CHECKS_ES
     ]
-    reason = (
-        f"Me faltó comprobar {', '.join(missing)}."
-        if missing
-        else "No pude comprobar lo que encontré."
-    )
+    unrun = [
+        _CHECKS_ES[c.name] for c in bundle.checks if c.outcome == "not_run" and c.name in _CHECKS_ES
+    ]
+    said = []
+    if failed:
+        verb = "no se cumple" if len(failed) == 1 else "no se cumplen"
+        said.append(f"Revisé {', '.join(failed)} y {verb}.")
+    if unrun:
+        said.append(f"Me faltó comprobar {', '.join(unrun)}.")
+    reason = " ".join(said) if said else "No pude comprobar lo que encontré."
     text = prompts.UNVERIFIED_TEMPLATE.format(reason=reason)
 
     result.advice = Advice(

@@ -1,10 +1,17 @@
 *
 !requirements.txt
-!rxconfig.py
-!concierge/
-!assets/
-!reflex.lock/
+!packages/coros_core/
+!apps/brujula/rxconfig.py
+!apps/brujula/reflex.lock/
+!apps/brujula/assets/
+!apps/brujula/brujula/
+!apps/huella/rxconfig.py
+!apps/huella/reflex.lock/
+!apps/huella/assets/
+!apps/huella/huella/
 
-assets/external/
+# apps/*/requirements.txt is deliberately NOT un-ignored: `reflex init` seeds it with
+# nothing but the reflex pin and it would shadow the root pins inside the image.
+apps/*/assets/external/
 **/__pycache__/
 **/*.py[cod]

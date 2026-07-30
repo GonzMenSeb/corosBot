@@ -314,7 +314,14 @@ def panel(top: str = "0") -> rx.Component:
             spacing="0",
             align="stretch",
             flex_shrink="0",
-            width=["100%", "100%", "100%", RAIL_W],
+            # `auto`, not `100%`, for exactly as long as the side margin below exists: a
+            # margin is outside the width, so `100%` plus `0 1rem` is the container's width
+            # plus 32px and the page scrolls sideways by the margin. Measured at 414 on the
+            # live instance, 30 Jul 2026: scrollWidth 415 against clientWidth 399. Stretched
+            # in a flex column, `auto` fills the line minus its own margins, which is what
+            # the floating-card look at mobile actually wants. RAIL_W still pins the desktop
+            # column, where the margin is 0 and `100%` would have been harmless.
+            width=["auto", "auto", "auto", RAIL_W],
             height=["22rem", "22rem", "22rem", f"calc(100vh - {top})"],
             position=["static", "static", "static", "sticky"],
             top=top,

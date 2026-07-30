@@ -1,9 +1,15 @@
 name: tests
 
-# Pull requests only. Jenkins owns main — see infra/jenkins/Jenkinsfile — but a job on
-# */main first sees a bad commit after it has already landed, and this is where merges
-# actually happen. Needs no secrets: the offline suite touches neither the network nor
-# a credential, so a public-repo runner is enough.
+# Pull requests only. Jenkins owns `main` — see infra/jenkins/Jenkinsfile, where TWO jobs
+# (brujula-deploy, huella-deploy) run this same suite and then build each app's image — but a
+# job on */main first sees a bad commit after it has already landed, and this is where merges
+# actually happen. Needs no secrets: the offline suite touches neither the network nor a
+# credential, so a public-repo runner is enough. `scripts/doctor.py` is deliberately NOT run
+# here; it is a preflight for a developer's checkout and it reaches COROS, Gemini and Strava.
+#
+# `infra/jenkins/**` and `.github/workflows/**` are deliberately absent from paths-ignore:
+# tests/test_layout.py parses this file and the Jenkinsfile to assert neither hand-rolls
+# an import path for the test command, so a change to either can break the suite.
 on:
   pull_request:
     paths-ignore:
@@ -27,12 +33,26 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+          # The ROOT requirements.txt is the only pin set in the monorepo. `reflex init` seeds
+          # apps/<app>/requirements.txt with nothing but the reflex pin; both are gitignored
+          # and tests/test_layout.py fails if either is committed.
           cache-dependency-path: requirements.txt
 
       - run: pip install -r requirements.txt
 
-      # pytest.ini already pins -m "not live"; passing it again keeps the intent local
-      # to this file rather than inherited from a config someone may edit. Import roots
-      # are not repeated here — pytest.ini's pythonpath owns them, so this command
-      # cannot drift out of sync with `make check`.
+      # One flat suite drives the shared core AND both apps, so its import roots are the thing
+      # most likely to break in a monorepo — and the failure is a collection-time
+      # ModuleNotFoundError, which is how CI broke on PR #1. tests/test_layout.py is where
+      # "coros_core imports on its own" and "both app packages import from the repo root" live,
+      # so it runs first: a broken import root fails in seconds instead of after the whole run.
+      - run: python -m pytest -m "not live" tests/test_layout.py
+
+      # The whole offline suite, both apps. `make check` is
+      # `./.venv/bin/python -m pytest -m "not live" -q`, so this differs by the interpreter path
+      # and by that `-q`, which pytest.ini's addopts already applies to every caller. Passing
+      # the marker again keeps the intent local to this file rather than inherited from a
+      # config someone may edit.
+      # Import roots are NOT repeated here: pytest.ini's `pythonpath` owns them, so this command
+      # cannot drift out of sync with `make check`, and a partial copy (`PYTHONPATH=.`) would
+      # still run while being unable to import the core or either app.
       - run: python -m pytest -m "not live"

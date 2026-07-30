@@ -570,3 +570,99 @@ class TestTheRailIsExactlyAsShortAsTheHeaderIsTall:
             "aria-controls is what tells a screen reader the button and the panel are the\n"
             "same thing; the panel carries that id."
         )
+
+
+class TestNothingIsWiderThanTheViewportItSitsIn:
+    """A `100%` width and a horizontal margin on the same element is a sideways scrollbar.
+
+    Found in production, not here: at 414 the live instance measured `scrollWidth` 415
+    against `clientWidth` 399 — the audit rail was `width: 100%` with `margin: 0 1rem 1rem`,
+    and a margin sits OUTSIDE the width, so the box is the container plus 32 px. Huella's
+    rail never had it because it uses a border rather than a floating margin at mobile.
+
+    The rendered-tree walk cannot see a computed layout, so this pins the pair of props
+    that produces it, per breakpoint, which is the thing an author actually edits.
+    """
+
+    RESPONSIVE = ("width", "margin", "margin_left", "margin_right")
+
+    @staticmethod
+    def _components(node: Any) -> Iterator[Any]:
+        """Every Component in the tree, including both arms of an rx.cond.
+
+        Unlike the rendered-string walks elsewhere in this file, this one wants the live
+        objects: the props are what an author edits and what the bug lived in, and a
+        serialised style string would have to be re-parsed to find them again.
+        """
+        seen: set[int] = set()
+        stack = [node]
+        while stack:
+            item = stack.pop()
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            if isinstance(item, (list, tuple)):
+                stack.extend(item)
+                continue
+            if not isinstance(item, rx.Component):
+                continue
+            yield item
+            stack.extend(getattr(item, "children", None) or [])
+            # rx.cond keeps its branches off `children`, and the mobile rail is one branch.
+            for attr in ("comp1", "comp2", "cond_component"):
+                branch = getattr(item, attr, None)
+                if branch is not None:
+                    stack.append(branch)
+
+    @staticmethod
+    def _plain(value: Any) -> Any:
+        """Reflex wraps every style value in a Var, and `str()` on one is its repr.
+
+        The first version of this test compared `str(width) == "100%"` against a
+        `LiteralStringVar`, so it passed with the bug reinstated — vacuous in exactly the
+        way it was written to catch. `_var_value` is the authored literal.
+        """
+        return getattr(value, "_var_value", value)
+
+    @classmethod
+    def _at(cls, value: Any, index: int) -> Any:
+        """Reflex responsive props are lists indexed by breakpoint; a scalar applies to all."""
+        if isinstance(value, (list, tuple)):
+            if not value:
+                return None
+            return cls._plain(value[min(index, len(value) - 1)])
+        return cls._plain(value)
+
+    @staticmethod
+    def _has_side_margin(margin: Any) -> bool:
+        if not isinstance(margin, str) or not margin.strip():
+            return False
+        parts = margin.split()
+        if len(parts) == 1:
+            return parts[0] not in ("0", "0px", "0rem", "auto")
+        # `top side bottom` and `top right bottom left` both put the sides at index 1.
+        return parts[1] not in ("0", "0px", "0rem")
+
+    @pytest.mark.parametrize("breakpoint_index", range(4))
+    def test_no_full_width_box_also_carries_a_side_margin(self, breakpoint_index: int) -> None:
+        offenders = []
+        for name, node in (
+            ("trace_panel.panel", trace_panel.panel("3rem")),
+            ("trace_panel._collapsed", trace_panel.panel("3rem")),
+            ("app._shell", app._shell()),
+        ):
+            for component in self._components(node):
+                style = getattr(component, "style", None) or {}
+                props = {**{k: getattr(component, k, None) for k in self.RESPONSIVE}, **dict(style)}
+                width = self._at(props.get("width"), breakpoint_index)
+                margin = self._at(props.get("margin"), breakpoint_index)
+                if str(width) == "100%" and self._has_side_margin(margin):
+                    offenders.append(f"{name}: width={width!r} margin={margin!r}")
+        assert not offenders, (
+            f"at breakpoint {breakpoint_index} these boxes are 100% wide AND side-margined:\n  "
+            + "\n  ".join(sorted(set(offenders)))
+            + "\nA margin is outside the width, so the box is its container plus the margins\n"
+            "and the page scrolls sideways by exactly that much. Use width='auto' — a\n"
+            "stretched flex item fills the line minus its own margins — or drop the margin\n"
+            "and let the parent's padding do the inset."
+        )

@@ -242,20 +242,93 @@ not need a rested IP.
 
 ### Strava integration (Huella only)
 
-- **OAuth 2.0:** authorize endpoint `https://www.strava.com/oauth/authorize`, token
-  endpoint `https://www.strava.com/oauth/token`. Scopes: `read,activity:read_all,profile:read_all`.
+Re-read from `developers.strava.com/docs/authentication` and `/docs/changelog` on
+**30 Jul 2026**, which corrected two entries that had been carried in from the plan.
+
+- **Two token endpoints exist and BOTH work. `client.py` uses
+  `https://www.strava.com/oauth/token` deliberately.** Measured 30 Jul 2026, POSTing
+  `grant_type=authorization_code` with a bogus `client_id` to each: `/oauth/token` and
+  `/api/v3/oauth/token` returned byte-identical `400` bodies
+  (`{"message":"Bad Request","errors":[{"resource":"Application","field":"client_id","code":"invalid"}]}`),
+  so both are live and both process OAuth. The docs' curl examples show only
+  `/api/v3/oauth/token`, and there is a Strava community thread titled "'oauth/token'
+  endpoint not working" — but that is not what this measurement says, and the measurement is
+  what this registry records. **The reason to prefer the `/oauth/*` one is the migration:**
+  the 4 Jan 2027 base-URL change moves `/api/v3` to `api-v3.strava.com` and the changelog
+  says the OAuth host does not move, so `/oauth/token` is the path that does not have to
+  change. Do not "correct" it to `/api/v3/oauth/token` without re-measuring both.
+  Both grant types (`authorization_code` and `refresh_token`) POST form-encoded to it.
+- **Authorize `https://www.strava.com/oauth/authorize`; revoke
+  `https://www.strava.com/oauth/revoke`.** Revoke replaced `POST /oauth/deauthorize`, which
+  is retired 1 Jun 2027 — never call `deauthorize`. Scopes that exist: `read`, `read_all`,
+  `profile:read_all`, `profile:write`, `activity:read`, `activity:read_all`,
+  `activity:write`. Huella asks for `read,activity:read_all,profile:read_all`.
+- **`redirect_uri` is validated against the app's "Authorization Callback Domain", not
+  against a full registered URI.** Verbatim: "Must be within the callback domain specified by
+  the application. `localhost` and `127.0.0.1` are white-listed." So local dev needs no
+  second registration and the dev port is free to move. Do not write exact-URI-match logic.
+- **The API base URL moves to `https://api-v3.strava.com` on 4 Jan 2027, and is not live
+  yet.** Until then it is `https://www.strava.com/api/v3`, spelled once as a module constant
+  so the migration is one line. A widely-circulated third-party summary gives the new host as
+  `www.api-v3.strava.com` with a Jun 2027 date; **both are wrong** — the changelog is the
+  source. The OAuth host does not move.
 - **Access tokens expire in 6 hours; a refresh invalidates the previous refresh token
-  immediately.** Persist the new pair atomically or the user is locked out. `_SESSIONS`
-  dict update is not atomic across a retry; use a lock.
+  immediately.** Verbatim: "Please expect that this value can change anytime you retrieve a
+  new access token", and once a new one is returned "the older code will no longer work" —
+  applications must "persist the refresh token contained in the response, and always use the
+  most recent refresh token." Persist the new pair atomically or the user is locked out with
+  no way back but a fresh authorization. `_SESSIONS` dict update is not atomic across a
+  retry; use a lock.
 - **Rate limits:** 200 requests per 15 minutes + 2000 per day (overall); 100 per 15 min +
   1000 per day (read endpoints). The API returns `X-RateLimit-*` and `X-ReadRateLimit-*`
-  headers. A 429 response means the request was refused, never silently drop it to an empty
-  list.
+  headers, each a comma-separated `15min,daily` pair. A 429 response means the request was
+  refused, never silently drop it to an empty list. Strava sends no `Retry-After`: the
+  15-minute windows are wall-clock quarter-hours, so the wait is computed to the next one.
 - **Activities have no `type` enum.** They carry a `sport_type` string which may be any of
   40+ values (e.g. `"AlpineSki"`, `"NordicSki"`, `"BackcountrySki"`, `"IceSkate"`,
   `"InlineSkate"`, `"RollerSki"`, `"Skateboarding"`, `"Snowboarding"`, `"Snowshoeing"`,
-  `"Trail Run"`, `"TrailRun"`, `"TrackRun"`, `"Run"`, `"Trail Run"`, …). The model must
-  not invent categories.
+  `"Trail Run"`, `"TrailRun"`, `"TrackRun"`, `"Run"`, …). The model must not invent
+  categories, and **the list grows**: the changelog added Basketball, Cricket, Dance, Padel,
+  Physical Therapy and Volleyball on 30 Apr 2026. Parse it as `str`; an enum here is a
+  self-inflicted outage on Strava's next release.
+- **Deprecated 1 Sep 2026, so nothing may be built on them:** `/clubs/{id}/activities`,
+  `/clubs/{id}/admins`, `/clubs/{id}/members`, and `segments/explore` (restricted to an
+  approved Extended Access tier). `athlete/clubs` survives. Huella needs none of them.
+- **Strava's brand orange is `#FC5200`, not `#FC4C02`, and the difference costs a surface.**
+  `#FC4C02` is their older value and is what most of the web repeats; `theme.py` carried it
+  under a comment claiming it was verbatim from the assets, and the test asserted it against
+  a constant typed from the same memory, so nothing could catch it. Measured 30 Jul 2026 at
+  three boundaries that agree: all six orange SVGs inside Strava's own
+  `1.1-Connect-with-Strava-Buttons.zip` and `1.2-Strava-API-Logos.zip` contain **exactly one
+  hex colour, `#FC5200`** — the only other paint in any of them is a colour *keyword*, and
+  neither keyword is a brand colour: the two `btn_strava_connect_with_orange*` buttons each
+  carry `fill="white"` on **twelve** `<path>`s (the lettering knocked out of a single
+  `<rect fill="#FC5200">`) and the four `api_logo_*_orange` files each carry `fill="black"`
+  once, over and above the root `<svg fill="none">`. Read the fact as *one brand colour, no
+  second orange, nowhere a tint or a shade of it* — that is what it is for, and it is what
+  makes recolouring detectable. The horizontal "Powered by Strava" PNG decodes to `#FC5200`
+  on every opaque non-black pixel; and developers.strava.com/guidelines §3 names `#FC5200`.
+  The cost:
+  `STRAVA on SHEET` is **3.31:1** (clears) and `STRAVA on SHEET_2` is **2.9977:1** (does
+  not), so the mark is declared on `SHEET` alone. The assets may not be recoloured, so
+  darkening it to reach the floor is not available. Pinned by
+  `tests/test_huella_theme.py::TestTheVendorsOrangeIsNotOurs`.
+- **The official marks carry BLACK text, which is why the attribution block is a light
+  surface.** `api_logo_pwrdBy_strava_horiz_orange.svg` is two paths — `fill="black"` for the
+  words "Powered by" and `fill="#FC5200"` for the wordmark. On the instrument the black half
+  is invisible. Both assets are vendored byte-identical under `apps/huella/assets/strava/`
+  and Reflex serves them at `/strava/…`; the binding rules are Strava's own — never imply
+  sponsorship, never more prominent than our own name, never the app icon, never modified,
+  altered or animated.
+- **Standard Tier API access now requires an active paid Strava subscription** — 1 Jun 2026
+  for new developers, 30 Jun 2026 for existing ones, currently $11.99/month; developers who
+  were already active were offered three months free by emailed code. Strava's stated reason
+  is AI scraping, with developer applications up 448% year-to-date. **This is a blocker on a
+  person, not on code:** Huella's `live` Strava tests and the real OAuth round-trip in the
+  success criteria cannot run until the repo owner holds a subscription *and* has registered
+  an app. Everything else about Huella — the client, the privacy boundary, the agent, the UI,
+  the whole offline suite — is built and tested without it, and `tests/test_strava.py`'s live
+  half skips when `STRAVA_CLIENT_ID` is unset rather than failing.
 
 ### Gemini and the model client (`packages/coros_core/gemini.py`)
 
@@ -312,6 +385,38 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   `None`, why built-in search may never share a request with custom tools, and
   `response_schema` returning a typed `response.parsed` — read DecaBot `AGENTS.md:196-215`.
   **Do not restate them here.**
+
+### The storefront classifies by TLS fingerprint, and calls it a rate limit
+
+Measured 30 Jul 2026, and this is the single most expensive fact in the repo to not know —
+it cost an afternoon and it presents as a rate limit, body and all.
+
+- **`https://coros.com.co/products.json` answers `429 local_rate_limited` to every Python
+  HTTP client, indefinitely, and serves `curl`.** After **30+ minutes of complete silence**
+  from one IP, `requests` as the first request of the window: `429`. In the same window,
+  minutes apart: `httpx` `429`, `curl` `200` (297 399 B), `requests` `429`. A bucket left
+  untouched for half an hour has refilled; this is not a bucket.
+- **It is not the User-Agent, the headers, the HTTP version or connection pooling.**
+  `requests` wearing `curl/8.5.0` → `429`. `requests` sending curl's **exact** header set,
+  with `Accept-Encoding` and `Connection` removed → `429`. `curl` over h2 → `200`;
+  `curl --http1.1` → `200`. Each of those was a separate test and each ruled one thing out.
+- **It is the ClientHello, and impersonating it is the fix.** `curl_cffi` with
+  `impersonate="chrome"` → `200`, 297 399 B. The *same library* with no impersonation →
+  `403` and a 6 924 B Cloudflare challenge page. `requests` and `httpx` behave identically
+  because they share Python's `ssl`-module fingerprint.
+- **`impersonate` is load-bearing and the two failures must stay apart.** `429` is a
+  throttle and sets `rate_limited` on the `catalog.unavailable` event; `403` is a
+  fingerprint problem and must not. Conflating them puts the "COROS refused us" excuse back
+  into `scripts/verify_brujula.py`, which is exactly the bug that suite was written to stop.
+- **Only the storefront is gated. `ucp.py` stays on httpx.** `/api/ucp/mcp` answered `httpx`
+  in the same minutes the feed was refusing it — two different limiters, and the UCP one is
+  not fingerprinting. Do not unify the clients, for a different reason than this registry
+  used to give.
+- The old explanation — "the storefront refuses reused connections" — was a **Decathlon**
+  measurement carried over from DecaBot and never reproduced here. See `docs/DECISIONS.md`,
+  30 Jul, both storefront entries: the first records the measurements and refuses to
+  conclude, the second concludes. Two confident intermediate verdicts were wrong; the
+  measurements were not.
 
 ### Rate limits and pacing
 
@@ -410,6 +515,69 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   themselves therefore turns an accented password — in a Spanish app, the likely kind — into a
   500 rather than a refusal. `state._digest()` is what gets compared: hex, ASCII, equal
   length, which is what a constant-time comparison wants anyway.
+
+### The OAuth callback route (Huella only)
+
+Measured end to end on **30 Jul 2026** by `scripts/spike_api_transformer.py` — a throwaway
+Reflex app served the way the container serves it (`granian --factory`, `__REFLEX_SKIP_COMPILE`,
+`__REFLEX_MOUNT_FRONTEND_COMPILED_APP=true`, a real `reflex export`), 14 probes, all passing.
+`make spike-oauth` re-runs it; do that whenever the `reflex` pin moves, because every fact
+below is a fact about `App.__call__` and nothing warns you when it changes.
+
+- **A route on the `api_transformer` outranks the compiled frontend's catch-all.** In prod
+  Reflex appends `get_frontend_mount()` — a `Mount` that serves `.web/build/client` and answers
+  *anything* — and that is what would hand Strava a 404. It does not, because the mount goes on
+  `asgi_app.routes`, Reflex's own router, and `App.__call__` then makes that whole router a
+  single `Mount("")` **inside our Starlette**. Starlette matches in list order, so our routes are
+  simply earlier. Probed: `/oauth/strava/callback?code=…` → our 200 with the query string intact,
+  no `code` → our 400 not a static 404, `POST` → 405 (a swallowed path would 404),
+  `/oauth/strava/nope` → 404 (the prefix is not a wildcard), and `/`, `/ping` and `/_event/`
+  (101) all still served.
+- **A route registered *after* `rx.App(...)` still wins.** The mount happens inside
+  `App.__call__`, which granian invokes per worker boot — not at construction — so
+  `api.routes.append(Route(...))` after the `rx.App(...)` line is reachable. Verified live.
+  The inverse is the failure to fear: a route appended after a `Mount("")` on the *same* router
+  is unreachable, and the symptom is a 404 on a route that plainly exists, with nothing in any
+  log. Both halves pinned by `tests/test_contracts.py::TestAnOauthCallbackRouteOutranksTheFrontendMount`.
+- **The `api_transformer`'s own `lifespan=` never runs.** `App.__call__` ends by building
+  `Starlette(lifespan=self._run_lifespan_tasks)` and mounting everything else into *that*, and a
+  mounted ASGI app is never sent a lifespan scope. A `lifespan=` on the transformer is therefore
+  dead code that fails silently — the spike's marker file was never written. Huella's startup
+  work goes through `app.register_lifespan_task`, which is the hook that does fire.
+- **Reflex puts its own CORS policy on our route, and the default mirrors any origin.**
+  `App._add_cors(api_transformer)` runs on the line above the mount, `cors_allowed_origins`
+  defaults to `("*",)`, and `_add_cors` passes `allow_credentials=True` — so under the default
+  config `Origin: https://evil.example` came back as `access-control-allow-origin`, on the
+  callback, with credentials allowed. **Both apps' `rxconfig.py` must pin
+  `cors_allowed_origins`, from `BRUJULA_ALLOWED_ORIGINS` / `HUELLA_ALLOWED_ORIGINS`** — read at
+  worker boot by `get_config()`, so unlike `api_url` it is a real runtime value and belongs in
+  the `.env` rather than baked into the bundle. The callback is what made this findable, but the
+  policy covers **every route either app serves**, so any site could make credentialed
+  cross-origin requests to Brújula's backend too and read the answers. DecaBot has the same
+  exposure and nobody narrowed it; that is not a reason to ship it twice more. Phase 2 of the
+  spike proved the narrowing drops the foreign mirror, keeps ours, and costs nothing —
+  `/ping`, `/` and the websocket upgrade all still serve.
+  Strava's own redirect is unaffected either way: a top-level navigation carries no `Origin`, so
+  CORS never applies to the request that matters. Pinned by
+  `tests/test_contracts.py::TestReflexPutsItsOwnCorsPolicyOnOurRoute`.
+- **The same list gates the `/_event` websocket, and that is the bigger half.**
+  `reflex/app.py:540` feeds `cors_allowed_origins` to the socket.io `AsyncServer` as well as to
+  the HTTP middleware, and `engineio/async_server.py:227` checks `HTTP_ORIGIN` **only when one
+  is present**. Measured under granian 30 Jul 2026 with `cors_allowed_origins=["http://localhost:3000"]`:
+  no `Origin` → `101`, `Origin: http://localhost:3000` → `101`, `Origin: https://evil.example`
+  → **`403 Forbidden`**. Three consequences, all load-bearing. The deploy health-check's curl
+  probe and Strava's redirect send no `Origin`, so neither is affected. A foreign page cannot
+  open the event channel at all, which is a stronger result than the CORS mirror — that channel
+  is how every handler is invoked. And **the origin the browser loads the page from must be on
+  the list**: drop `http://localhost:3000` and a local dev run renders perfectly and never
+  connects, which is the same silent symptom `rxconfig.py` already warns about for `api_url`.
+  The default therefore *is* the dev origin, and `BRUJULA_ALLOWED_ORIGINS` /
+  `HUELLA_ALLOWED_ORIGINS` **replace** it rather than adding to it — a hosted instance that
+  still trusted localhost would trust every other container on the VPS.
+- **The callback still must not answer with a body worth stealing.** CORS is a browser policy,
+  not a server one, and the narrowing above is defence in depth rather than the guarantee. The
+  callback exchanges the code server-side and answers with a redirect and an empty body, so
+  there is nothing for a mirrored origin to read even if the policy regresses.
 
 ## Module boundaries — enforced socially, and worth it
 
@@ -553,12 +721,17 @@ rendered only from data; prose carries only reasoning.
 | `apps/brujula/brujula/agent/prompts.py` (a stage, a template) | `tests/test_brujula_agent.py` — one test asserts a canned template exists for every non-advice `Intent`, so a new intent without one is a model call spent letting the model improvise a refusal |
 | `apps/brujula/brujula/state.py` (a var, a caption, the gate) | `tests/test_brujula_state.py`. A caption key must be an event something actually emits or it can never fire; a new `RequirementKey` needs a word in `_REQUIREMENT_ES` and a new declared check needs one in `_CHECK_ES`, or the rail shows an English enum to a Colombian reader; a new handler that spends a model call or reaches COROS needs the `GATE_ON and not self.unlocked` re-check, because conditional rendering is not a guard |
 | `apps/brujula/brujula/ui/theme.py` (a colour, a ratio comment, a registry) | `tests/test_brujula_theme.py` + `docs/VISUAL-BRIEF-BRUJULA.md` + `assets/brujula.css`, which mirrors the tokens as custom properties. A new colour needs a line in `SURFACES`, `TYPE_ON`, `EDGE_ON` or `RULE_ONLY` and its measured ratio in a comment, or the coverage scan fails; a ratio is recomputed from the two colours it names, so editing a colour without editing its comment fails too |
+| `apps/huella/huella/ui/theme.py` (a colour, a ratio comment, a registry) | `tests/test_huella_theme.py` + `docs/VISUAL-BRIEF-HUELLA.md` + `assets/huella.css`. Same contract as Brújula's theme, plus two of its own: **the dark half and the light half do not share tokens** — `GRAPHITE`/`GRAPHITE_DEEP` are sheet-only (`GRAPHITE on DASH` 1.83:1) and `RULE` is declined outright (`RULE on DASH` 16.20:1 makes a hairline the brightest thing on screen), so a token used across the two registers needs a measured pair on *both*. And **`STRAVA = "#FC5200"` may only ever appear unmodified on `SHEET`, and on nothing else**: it is the vendor's, the assets carrying it may not be recoloured or animated, and on `SHEET_2` it measures **2.9977:1** — under the 3:1 graphic floor, with no legal fix, because darkening the asset is what the brand terms forbid. It is 25.6° of hue from `FLAG` at 1.28:1, and **the contrast is what makes the two one glyph, not the hue** — so the guarantee that they are tellable apart is that they never share a surface. `ratio()` in that suite rounds to **four** places, not two: at two, 2.9977 becomes 3.0 and a floor assertion passes on a failure |
 | `apps/brujula/brujula/ui/brand.py` (a dot state, the dial, the wordmark) | `tests/test_brujula_brand.py` + the mark's entries in this facts registry. `HALO_CLASS` must be defined in `assets/brujula.css` with its `prefers-reduced-motion` fallback, or the thinking dot silently stops moving; a new dot state has to be tellable apart from the other two by hue or by contrast, and a ratio written in this file is recomputed from the two colours it names |
 | `apps/brujula/brujula/ui/{chat,product,advice,trace_panel,gate}.py` | `tests/test_brujula_ui.py`, which walks the rendered tree of every entry point in that file's `ENTRIES` table — a new one belongs there or nothing checks it. A colour must be a token: a literal fails the scan, and a pair that is not in `theme.TYPE_ON` / `EDGE_ON` has to be added to `theme.py` **with its measured ratio** before it can be used. The rail may not import a light token and no light module may import a `RAIL_*` one. A new `AdviceKind` needs a row in `advice._KINDS`, a new `Confidence` a phrase in `advice._CONFIDENCE_ES`, a new `Outcome` a glyph in `advice._OUTCOME_ICON`. Every `bj-` class a component names must exist in `assets/brujula.css`, with its `prefers-reduced-motion` fallback if it animates. An icon-only control needs an `aria_label`; the bundle's English (`State.blocking`, `CheckRow.detail`) stays on the rail |
 | `apps/brujula/brujula/agent/loop.py` (a stage, a budget, a wire model) | `tests/test_brujula_agent.py` + the guardrail table's `loop.*` rows. A new stage needs a name in `REOPENED` or it re-runs on every resume; a new `response_schema` needs a place in `loop.SCHEMAS` or nothing checks it for the `additionalProperties` 400; a check the bundle can block on needs a Spanish name in `loop._CHECKS_ES` or the person is told a check failed without being told which |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
+| `apps/huella/huella/privacy.py` (a key, a value, a rationale template, a bound) | `tests/test_privacy_boundary.py`. A new `RequirementKey` needs an entry in **both** `_VALUES_BY_KEY` and `_RATIONALES` or `seal()` refuses everything the gate derives for it. **A rationale template may take `(sample_size, window_days)` and nothing else** — `seal()` regenerates it and compares, which is the only reason free text cannot ride out in that field; a template taking a third number ends the guarantee. Attacks in that suite are built to violate **exactly one** rule and assert the specific reason: `_violation` is a chain of early returns, so an over-determined attack still gets refused after its own check is deleted, and a mutation probe caught this suite doing that |
+| `apps/huella/huella/strava/client.py` or `models.py` (an endpoint, the latch, a wire field) | `tests/test_strava.py` + the Strava entries in this facts registry. The offline half must stay offline: it is verified by running the suite with every outbound `connect` denied at the socket layer, not by inspection. `TokenPair`'s redacting `__repr_args__` and its working `model_dump()` are a pair — a redaction that also hid the tokens from persistence would lock an athlete out on the next rotation |
+| `apps/huella/huella/app.py`'s `api_transformer`, its route list, or the `reflex` pin | `tests/test_contracts.py` (the two OAuth classes) **and** a re-run of `make spike-oauth`. The unit tests pin the mechanism against Reflex's source; only the spike proves the whole shape under granian with a real export, and it is the only thing that would catch the frontend catch-all winning. A new route goes on the transformer *before* nothing in particular — order against Reflex's mount is automatic — but a route added to `asgi_app` instead is unreachable |
 | `rxconfig.py` | `tests/test_brujula_app.py`; recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md`. Every value in that file is load-bearing for a running instance, not a preference |
 | `apps/brujula/brujula/app.py` (a route, the gate branch, the component set) | `tests/test_brujula_app.py`, and `reflex export --frontend-only` in `apps/brujula` followed by re-committing `reflex.lock/` — the lockfile is derived from which components the tree actually uses |
+| `scripts/verify_brujula.py` (a check, or what downgrades one to a WARN) | `tests/test_verify_brujula.py`. This script is the only thing that runs a real turn, so a bug in its judgement is a bug nothing else catches. A WARN may be granted **only** on an event in the turn's own trace — never on `advice_kind`, which the bundle sets to `insufficient_evidence` whenever *any* check could not run, with `blocking` left empty because it accepted. A new excuse needs the trace event that proves it and a test that a look-alike from another subsystem is refused |
 | a touched-path gate in `infra/jenkins/Jenkinsfile` | `infra/jenkins/Jenkinsfile`; the two apps have separate images |
 | the VPS deployment | nothing; merging to `main` rebuilds and redeploys. `docs/DEPLOY.md` covers the by-hand path. |
 

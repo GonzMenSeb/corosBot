@@ -129,6 +129,77 @@ class TestRxconfigCarriesTheFactsThatCostADemo:
             "page renders perfectly and does nothing at all."
         )
 
+    def test_the_default_credentialed_cors_wildcard_is_not_shipped(self) -> None:
+        """Reflex defaults `cors_allowed_origins` to `("*",)` and `App._add_cors` pairs it with
+        `allow_credentials=True`, so an unset value means any site can make credentialed calls
+        to this backend and read the answers — measured under granian 30 Jul 2026."""
+        allowed = list(config("brujula").cors_allowed_origins)
+        assert "*" not in allowed and allowed, (
+            f"cors_allowed_origins is {allowed!r}.\n"
+            "A wildcard here is Reflex's default, not a decision, and _add_cors sends it with\n"
+            "allow_credentials=True. See AGENTS.md, 'The OAuth callback route'."
+        )
+
+    def test_both_spellings_of_the_dev_origin_are_allowed_by_default(self) -> None:
+        """The list also gates the socket.io handshake (`reflex/app.py:540`), and engineio
+        compares the Origin header as an exact string — `origin not in allowed_origins`,
+        `async_server.py:229`. A browser sends whichever host was typed, so `localhost` and
+        `127.0.0.1` are two different origins and shipping only one of them means opening the
+        other renders the page and never connects."""
+        assert config("brujula").cors_allowed_origins == [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ], (
+            "the default allowed origins are no longer both spellings of the dev frontend on\n"
+            ":3000. rxconfig pins frontend_port=3000 and the backend answers on :8000, so the\n"
+            "dev browser is always cross-origin. Dropping either spelling does not fail loudly."
+        )
+
+    def test_the_hosted_origin_replaces_the_dev_one_rather_than_joining_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`roles/brujula/templates/env.j2` templates the public origin into this var. A
+        production instance that still trusted localhost would be trusting any process on the
+        box, which on this VPS means every other container."""
+        monkeypatch.setenv("BRUJULA_ALLOWED_ORIGINS", "https://brujula.web.vespiridion.org")
+        assert config("brujula").cors_allowed_origins == ["https://brujula.web.vespiridion.org"], (
+            "BRUJULA_ALLOWED_ORIGINS no longer replaces the default. If it appends instead,\n"
+            "the hosted app trusts http://localhost:3000 as well."
+        )
+
+    def test_a_comma_separated_list_is_accepted_and_trimmed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BRUJULA_ALLOWED_ORIGINS", "https://a.example , https://b.example ,")
+        assert config("brujula").cors_allowed_origins == [
+            "https://a.example",
+            "https://b.example",
+        ], (
+            "the origin list no longer splits on commas and trims. Reflex's own field carries\n"
+            "SequenceOptions(delimiter=','), so a reader will expect that shape; an untrimmed\n"
+            "' https://b.example' silently matches no origin at all."
+        )
+
+    def test_no_third_party_badge_is_injected_into_the_page(self) -> None:
+        """`show_built_with_reflex` defaults to None, which the compiler resolves to True for
+        anyone not on a paid Reflex tier — so leaving it unset ships a sticky "Built with
+        Reflex" badge on every page. Found bottom-right in a Playwright pass, 30 Jul 2026."""
+        assert config("brujula").show_built_with_reflex is False, (
+            "show_built_with_reflex is not explicitly False, so Reflex will inject its own\n"
+            "sticky badge into a client-facing page. None is not off — the compiler turns None\n"
+            "into True unless the deploy is on a paid tier."
+        )
+
+    def test_the_app_ships_a_favicon(self) -> None:
+        """A browser requests /favicon.ico unprompted on every page load, and Reflex serves
+        `assets/` at the web root, so an absent file is a 404 in the console of a demo."""
+        icon = rxconfig_path("brujula").parent / "assets" / "favicon.ico"
+        assert icon.is_file(), f"{icon} is missing; every page load logs a 404 for it"
+        assert icon.read_bytes()[:4] == b"\x00\x00\x01\x00", (
+            "assets/favicon.ico is not an ICO. Browsers sniff the bytes, and the extension "
+            "alone will not make a PNG or an SVG work at this path."
+        )
+
     def test_rxconfig_needs_nothing_on_sys_path_but_its_own_directory(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         done = subprocess.run(

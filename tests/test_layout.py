@@ -6,12 +6,15 @@ from __future__ import annotations
 import configparser
 import importlib
 import pathlib
+import re
 import subprocess
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 APPS = ("brujula", "huella")
+JENKINSFILE = ROOT / "infra" / "jenkins" / "Jenkinsfile"
+SHIPPING_STAGES = ("Build & Push", "Deploy", "Health")
 
 
 def tracked() -> set[str]:
@@ -36,6 +39,15 @@ def addopts() -> str:
 
 def requirements() -> list[str]:
     return (ROOT / "requirements.txt").read_text().split()
+
+
+def jenkins_stages() -> dict[str, str]:
+    """Split the Jenkinsfile on its top-level `stage('X') {` headers rather than brace-match
+    it: the Deploy stage carries a Go template whose `{{...}}` a naive brace counter reads as
+    two extra opens. There are no `parallel` blocks, so every stage sits at the same
+    eight-space indent and a split on that is exact."""
+    parts = re.split(r"\n {8}stage\('([^']+)'\) \{", JENKINSFILE.read_text())
+    return dict(zip(parts[1::2], parts[2::2]))
 
 
 class TestEachAppOwnsItsOwnReflexWorkingDirectory:
@@ -161,3 +173,120 @@ class TestTheDependencyPinsAreTheOnesTheHostingFactsWereMeasuredOn:
             "prod server. Moving the pin means re-verifying all of them and updating\n"
             "AGENTS.md in the same commit."
         )
+
+
+class TestABranchBuildShipsNothing:
+    """One Jenkinsfile serves two jobs that both fire on every push, so the only thing
+    standing between a branch build and the VPS is the ON_MAIN gate. Groovy-parsed clean
+    30 Jul 2026 (`groovy:4-jdk17`, `new GroovyShell().parse(...)`); these pin the semantics
+    the parser cannot see."""
+
+    @pytest.mark.parametrize("stage", SHIPPING_STAGES)
+    def test_the_stage_is_gated_on_on_main(self, stage: str) -> None:
+        body = jenkins_stages()[stage]
+        assert "expression { env.ON_MAIN == 'true' }" in body, (
+            f"The {stage} stage is not gated on ON_MAIN.\n"
+            "Both jobs are cpsScm pipelineJobs pointing at this one scriptPath, so an\n"
+            "ungated shipping stage pushes and deploys from whatever branch was built."
+        )
+
+    @pytest.mark.parametrize("stage", ("Test", "Live contract tests"))
+    def test_the_test_stages_are_not_gated_on_on_main(self, stage: str) -> None:
+        assert "ON_MAIN" not in jenkins_stages()[stage], (
+            f"The {stage} stage is gated on ON_MAIN.\n"
+            "A branch build must deploy nothing, but it must still run the suite — that is\n"
+            "the whole value of building a branch at all."
+        )
+
+    def test_on_main_compares_refs_rather_than_reading_branch_name(self) -> None:
+        text = JENKINSFILE.read_text()
+        assert "refs/remotes/origin/main" in text, (
+            "ON_MAIN is no longer derived by comparing HEAD to refs/remotes/origin/main.\n"
+            "Measured in this workspace 30 Jul 2026: the comparison yields false on a\n"
+            "feature branch and false again when the ref is missing, so it fails closed."
+        )
+        code = "\n".join(
+            line for line in text.splitlines() if not line.lstrip().startswith("//")
+        )
+        assert not re.search(r"when\s*\{\s*branch\s", code), (
+            "A `when { branch ... }` condition appeared in the Jenkinsfile.\n"
+            "That matches on BRANCH_NAME, which only a multibranch job sets. In a cpsScm\n"
+            "pipelineJob it is undefined, the condition never fires, and the build goes\n"
+            "green having deployed nothing. DecaBot's build #1 did exactly that."
+        )
+
+
+class TestRollbackHasATargetToRollBackTo:
+    """PREV_SHA is read off the running image's own label, so the label has to be written by
+    the build, the tag it names has to still exist in the registry, and an unlabelled image
+    has to be told apart from a labelled one."""
+
+    LABEL = "org.opencontainers.image.revision"
+
+    def test_the_build_writes_the_revision_label(self) -> None:
+        assert f"--label {self.LABEL}=$GIT_SHA" in jenkins_stages()["Build & Push"], (
+            f"The build no longer stamps {self.LABEL}.\n"
+            "The Deploy stage reads that label off the running image to compute PREV_SHA.\n"
+            "Unstamped, `docker inspect --format '{{index .Config.Labels ...}}'` returns an\n"
+            "empty string — measured 30 Jul 2026 against an image built without it — so\n"
+            "every deploy would report no rollback target."
+        )
+
+    def test_the_deploy_reads_that_label_to_compute_prev_sha(self) -> None:
+        """Pins the ASSIGNMENT, not the name.
+
+        The first version of this asserted `"env.PREV_SHA" in body and LABEL in body`, and
+        it survived the realistic regression: renaming only `env.PREV_SHA = sh(` to
+        `env.PREVIOUS = sh(` leaves the variable never computed and the rollback silently
+        dead, while the substring lives on in the untouched `echo "Currently live: ..."`
+        two lines below. Mutation-probed 30 Jul 2026 — 32 passed with rollback disabled.
+        A test that a nearby echo can satisfy is pinning the echo.
+        """
+        body = jenkins_stages()["Deploy"]
+        assign = re.search(r"env\.PREV_SHA\s*=\s*sh\(", body)
+        assert assign, (
+            "Nothing in the Deploy stage ASSIGNS env.PREV_SHA from an sh() call.\n"
+            "Reading it off the running image before the pull is what makes the rollback\n"
+            "target the revision that was actually live, rather than a guess. Mentioning\n"
+            "the name in an echo is not computing it."
+        )
+        # The label has to be read by THAT call, not merely somewhere in the stage.
+        call = body[assign.start() : body.index(".trim()", assign.start())]
+        assert self.LABEL in call, (
+            f"env.PREV_SHA is assigned, but its sh() does not read {self.LABEL}.\n"
+            "The rollback target has to come off the running image's own label; any other\n"
+            "source is a guess about what was live."
+        )
+        assert "$IMAGE:latest" in call, (
+            "PREV_SHA is not read off :latest. It has to inspect the tag that is actually\n"
+            "serving — inspecting :$GIT_SHA would report the revision being deployed, so\n"
+            "every rollback would target the build that just failed."
+        )
+
+    def test_every_build_pushes_the_sha_tag_beside_latest(self) -> None:
+        body = jenkins_stages()["Build & Push"]
+        assert "name=$IMAGE:$GIT_SHA,$IMAGE:latest" in body, (
+            "The build no longer pushes :$GIT_SHA alongside :latest.\n"
+            "PREV_SHA names a tag the rollback pulls back, so a build that only pushes\n"
+            ":latest leaves the previous revision unreachable the moment it is replaced."
+        )
+
+    def test_the_two_names_stay_csv_quoted_for_buildx(self) -> None:
+        assert r'--output type=image,\\"name=' in JENKINSFILE.read_text(), (
+            "The escaped quotes came off the buildx --output value.\n"
+            "Groovy turns \\\\\" in a '''...''' literal into \\\", the shell turns that into a\n"
+            "real quote, and buildx parses --output as CSV where a comma-bearing field must\n"
+            "be quoted. Measured 30 Jul 2026 against docker 28.3.2: quoted exports fine,\n"
+            "unquoted fails `ERROR: invalid value <second name>`."
+        )
+
+    def test_an_unlabelled_previous_image_blocks_the_rollback_loudly(self) -> None:
+        body = jenkins_stages()["Health"]
+        assert "if (!env.PREV_SHA)" in body, (
+            "The Health stage no longer checks PREV_SHA before rolling back.\n"
+            "An unlabelled or absent image yields an empty string, and an unguarded\n"
+            "rollback would `docker pull $IMAGE:` — a failure that reads as a registry\n"
+            "problem rather than as the missing rollback target it is."
+        )
+
+
