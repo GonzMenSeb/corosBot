@@ -229,6 +229,20 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   request hangs the turn forever, which from the outside is a crash.
 - **`generate_content` takes `model`, `contents`, `config` and nothing else** — there is no
   `previous_interaction_id`. History is threaded client-side as `list[types.Content]`.
+- **A `response_schema` may not be a model with `extra="forbid"`.** Pydantic renders it as
+  `additionalProperties: false`, the SDK passes it through, and the API answers
+  `400 INVALID_ARGUMENT · Unknown name "additional_properties" at
+  'generation_config.response_schema.properties[0].value.items'`. Every policy model in
+  `models.py` sets `extra="forbid"` deliberately, so **none of them can be a response
+  schema**: `loop.py` carries plain wire models (`loop.SCHEMAS`) and validates them into
+  the frozen ones in code, which is where a key outside the allowlist is dropped anyway.
+  A `str | int | bool` union renders as `anyOf` and *is* accepted — `budget_minor` came
+  back as an int on the same probe. Pinned in `tests/test_brujula_agent.py`.
+- **Every `function_call` in one model turn needs a matching response part in ONE
+  `Content`.** Split across two, or one left unanswered, and the *next* request 400s —
+  which surfaces a turn later, at a stage that looks unrelated. `loop._retrieve` answers
+  even the calls it refuses for budget, and answers them with `TIMEOUT`: "we stopped" is a
+  different sentence from "there is nothing".
 - **429 is ordinary here, not exotic.** One per-project quota is shared by Brújula, Huella
   and DecaBot (`vault_decabot_gemini_api_key`, by decision — there is no key pool and no
   `bind_key()`, unlike DecaBot, which rotates one for a QR-code audience). `gemini-3.6-flash`
@@ -284,7 +298,46 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   3000, backend 8000), one port in prod (both on 8000), compile into `.web/build/client`,
   domain-agnostic `api_url=http://localhost:8000`, skip-compile in prod, `granian` not
   `uvicorn`, session state to `./.states` on disk (DISK state manager, not NOOP).
-- **Do NOT re-read those sections here. Link to DecaBot's AGENTS.md.**
+- **Do NOT re-read those sections here. Link to DecaBot's AGENTS.md.** The entries below are
+  ours, and correct or sharpen what that file says.
+- **`rxconfig.py` is imported with `sys.path` reduced to its own directory.** `get_config()`
+  clears the path down to the current directory, and retries with the ambient one only if that
+  raises. Verified both halves 30 Jul 2026: an `import coros_core` there raises on a bare
+  `reflex run` in `apps/brujula` and succeeds when the caller happens to export a `PYTHONPATH`
+  carrying `packages/`. Keep those files to `reflex` and the stdlib. It is also why
+  **`rx.App(theme=...)` stays on the app** although 0.9.7 deprecates it in favour of
+  `rx.plugins.RadixThemesPlugin(theme=…)` in `rxconfig.py`: the theme reads
+  `brujula/ui/theme.py`'s tokens and the config cannot. Revisit when the pin moves.
+- **The module name `rxconfig` is global to the test suite.** Reflex fixes both the filename
+  and the bare name it imports it as, and `pytest.ini` puts both app directories on `sys.path`
+  — so `import rxconfig` resolves by path order and caches the winner in `sys.modules`, handing
+  one app's config back for the other with no error anywhere. Tests load it by file path.
+- **`reflex init` fires on the first `reflex run`/`export` in a fresh clone** and seeds the app
+  directory with its own `.gitignore` and a `requirements.txt` holding nothing but the reflex
+  pin. Both are gitignored, and `tests/test_layout.py` fails if either is committed: that
+  requirements.txt shadows the root pins for anything installing from the app directory.
+- **`reflex.lock/` tracks the component set, not the Reflex version.** Brújula's export drops
+  the whole markdown chain — `react-markdown`, `react-syntax-highlighter`, the rehype/remark
+  plugins — because nothing renders markdown; the presentation prompt asks for plain prose and
+  the bubbles are `rx.text(white_space="pre-wrap")`. Re-export and re-commit the lockfile
+  whenever an app's component set changes.
+- **Reflex 0.9.7 DOES hold a dataclass state var** — verified 30 Jul 2026. It wraps one in a
+  `MutableProxy`, tracks mutations through it and serialises it (sets and all) to the
+  browser. So "Reflex state cannot hold a dataclass" is not why `ConversationSession` lives
+  in `state._SESSIONS`: the reason is **cost**. As a state var, every mutation the agent loop
+  makes to the transcript, the requirements and the advice is broadcast to the browser, and
+  `StateManagerDisk` pickles the same bytes into `.states/`. Backend-only (`_`-prefixed) vars
+  stay off the wire but are still pickled. Pinned by
+  `tests/test_brujula_state.py::TestTheConversationDoesNotLiveInAStateVar`.
+- **The `MutableProxy` / `json.dumps` trap is the COMPACT path only.** The C encoder does an
+  exact type check, misses the proxy and falls through to `default=`, so a payload comes out
+  as a Python repr inside a JSON string. Passing `indent=` selects the pure-Python encoder,
+  which goes through `isinstance` and survives — so removing `state.plain()` breaks a compact
+  dump and silently passes an indented one. `plain()` runs regardless.
+- **`hmac.compare_digest` raises `TypeError` on non-ASCII `str`.** Comparing the passwords
+  themselves therefore turns an accented password — in a Spanish app, the likely kind — into a
+  500 rather than a refusal. `state._digest()` is what gets compared: hex, ASCII, equal
+  length, which is what a constant-time comparison wants anyway.
 
 ## Module boundaries — enforced socially, and worth it
 
@@ -313,6 +366,22 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   in `capability.WITHHELD` as plain strings so the omission is auditable rather than a
   silence, and a test asserts no `ToolId` carries either value — an id that cannot be
   spelled cannot be offered. `ucp.call_ucp()` can still reach both from a click handler.
+- **UCP is the cart surface, so no model-facing tool may reach it.** `brujula/agent/tools.py`
+  never calls `call_ucp()` or `rpc()`: an AST scan in `tests/test_brujula_agent.py` rejects
+  the attribute. This is why `search_products` is a literal match over the per-turn
+  snapshot rather than a call to UCP's `search_catalog`, and it costs nothing — a UCP hit
+  absent from the snapshot cannot pass `check_provenance(candidates, catalog)` anyway, so a
+  semantic path could only ever re-rank products the turn already holds. See
+  `docs/DECISIONS.md`, 30 Jul 2026.
+- **Brújula's retrieval reads one snapshot; it does not navigate.** All four of its tools
+  answer from the single `products.json` read the turn already paid for, so
+  `list_collections`/`get_collection_products` cost no network and a zero-result
+  `search_products` is **conclusive** — it read all 43. That is what
+  `check_buy_nothing(retrieval_conclusive=True)` rests on, and it is the opposite of
+  DecaBot, where an empty result is usually a partial look. The three groups (`relojes` 4,
+  `correas` 26, `accesorios` 13) are a partition derived from `devices.DEVICES` and
+  `devices.STRAPS` with the remainder as the third; `product_type` and `tags` are banned
+  in `tools.py` by the same kind of AST scan that bans them in `devices.py`.
 - **Every tool name is spelled once, in `capability.ToolId`, and the map is the only
   authority on which one can serve a request.** Both apps' schemas are written against
   those ids; `SURFACES` says which app exposes each. `capable_tools()` returning `()` is
@@ -345,6 +414,17 @@ live feed; an unbacked `"$X COP"` claim is rejected.
 | `catalog.strip_untrusted` | `guardrail.untrusted_text` | an injected segment was removed from vendor free text. Emitted only when something was removed, and it carries counts — never the matched text, which an evidence bundle would paste back into a model |
 | `evidence.build` | `evidence.bundle` | the advice agrees with the verdicts, and every check a recommendation requires actually ran. Derived from the trace, so a stage cannot self-certify; a required check with no event means `accepted=False` |
 | `capability.check_capability` | `guardrail.capability` | a request no tool can serve is a typed `NO_CAPABILITY`, never an empty search that reads as "COROS has nothing". `CapabilityVerdict` cannot be built with no tools and no reason, and `DeadEnd.outcome` is restricted to the escalating outcomes so "out of stock" cannot be dressed as "does not exist" |
+| `tools.lookup_device_compat` | `guardrail.device_compat` | a strap fit is read out of `devices.py`, never derived from a width or a title. Records the slug, the case and the counts — the widths themselves are the registry's to state |
+| `tools.lookup_device_compat` | `guardrail.case_unspecified` | an APEX 4 with no case size gets the **question** back as `NOT_ELIGIBLE`. An empty strap list would read as "COROS sells no APEX 4 straps", and picking a case is a guess |
+| `tools.get_collection_products` | `guardrail.handle_rejected` | an unvalidated group handle is never looked up. The rejection is a tool *answer* carrying the three live names, so the model retries instead of the turn raising. Records the handle's length, never the handle |
+| `tools.get_collection_products` | `guardrail.empty_collection` | a group that is live and carries nothing is `UNAVAILABLE` with a reason, not an empty `OK`. `Snapshot` refuses to be built `OK`-with-no-products at all, so a 429 cannot arrive here disguised as an empty catalogue |
+| `loop._advise` | `guardrail.evidence_blocked` | a recommendation the bundle refused is never presented, and no stage is marked done — so the next turn resumes instead of the person getting an answer nothing verified |
+| `loop._model` | `guardrail.model_budget` | the 26th model call of a conversation raises instead of running. The budget is per conversation, not per turn |
+| `loop._retrieve` | `guardrail.tool_budget` | the 7th tool call of a turn is answered with `TIMEOUT` rather than dropped. A dropped call leaves a `function_call` unanswered, which 400s the next request |
+| `loop._dispatch` | `guardrail.unknown_tool` | a tool name the model invented is a tool *answer*, not an exception, and it never counts as evidence about the catalogue. Records the name only when it is one of `capability.WITHHELD` — anything else is text the model made up |
+| `loop._requirements` | `guardrail.requirement_rejected` | a requirement outside `RequirementKey`, or a derived one with no sample, is dropped rather than carried. Records the count and only the keys that are our own vocabulary |
+| `loop._budget` | `guardrail.budget_unreadable` | a `budget_minor` that is not a whole number of centavos is dropped, never rounded. A budget read wrong by a factor of a hundred reports "nothing fits" about a catalogue full of things that do |
+| `loop._injection` | `guardrail.injection_blocked` | the payload is redacted from `session.turns` as well as ignored — the transcript is fed to the next gate call, so leaving it there re-injects it one turn later. Records the length, never the text |
 
 Two rules inside that table are easy to undo by accident. **Ambiguity is a question, never
 a pick**: a product with two variants and none named is dropped, the same way
@@ -397,8 +477,13 @@ rendered only from data; prose carries only reasoning.
 | a guardrail | the guardrail table above + `tests/test_guardrails.py` + the trace event name. A check with no row in that table is a check nobody can review |
 | `packages/coros_core/trace.py` (event shape or levels) | every `emit(...)` call site, `tests/test_trace.py`, and the guardrail table's trace-event column |
 | `packages/coros_core/evidence.py` (a declared check, a required set, an assumption) | `tests/test_evidence.py` + the guardrail table. A check the bundle requires but nothing emits blocks every recommendation, so the two move together |
+| `apps/brujula/brujula/agent/tools.py` (a tool, a group, `_slim`'s whitelist) | `tests/test_brujula_agent.py` + `brujula/agent/prompts.py`, whose stage prompts describe the tools by name + the guardrail table's four `tools.*` rows. A key added to `_slim` is a change to every prompt that renders one |
+| `apps/brujula/brujula/agent/prompts.py` (a stage, a template) | `tests/test_brujula_agent.py` — one test asserts a canned template exists for every non-advice `Intent`, so a new intent without one is a model call spent letting the model improvise a refusal |
+| `apps/brujula/brujula/state.py` (a var, a caption, the gate) | `tests/test_brujula_state.py`. A caption key must be an event something actually emits or it can never fire; a new `RequirementKey` needs a word in `_REQUIREMENT_ES` and a new declared check needs one in `_CHECK_ES`, or the rail shows an English enum to a Colombian reader; a new handler that spends a model call or reaches COROS needs the `GATE_ON and not self.unlocked` re-check, because conditional rendering is not a guard |
+| `apps/brujula/brujula/agent/loop.py` (a stage, a budget, a wire model) | `tests/test_brujula_agent.py` + the guardrail table's `loop.*` rows. A new stage needs a name in `REOPENED` or it re-runs on every resume; a new `response_schema` needs a place in `loop.SCHEMAS` or nothing checks it for the `additionalProperties` 400; a check the bundle can block on needs a Spanish name in `loop._CHECKS_ES` or the person is told a check failed without being told which |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
-| `rxconfig.py` | recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md` |
+| `rxconfig.py` | `tests/test_brujula_app.py`; recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md`. Every value in that file is load-bearing for a running instance, not a preference |
+| `apps/brujula/brujula/app.py` (a route, the gate branch, the component set) | `tests/test_brujula_app.py`, and `reflex export --frontend-only` in `apps/brujula` followed by re-committing `reflex.lock/` — the lockfile is derived from which components the tree actually uses |
 | a touched-path gate in `infra/jenkins/Jenkinsfile` | `infra/jenkins/Jenkinsfile`; the two apps have separate images |
 | the VPS deployment | nothing; merging to `main` rebuilds and redeploys. `docs/DEPLOY.md` covers the by-hand path. |
 

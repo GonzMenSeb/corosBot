@@ -17,6 +17,12 @@ venv/
 # reflex.lock/ is NOT ignored: each app's Dockerfile COPYs it and .dockerignore
 # un-ignores it, so a clean clone cannot build an image without it.
 *.db
+# `reflex init` — which any first `reflex run` in a fresh clone triggers — seeds the app
+# directory with its own .gitignore and a requirements.txt holding nothing but the reflex
+# pin. The root files are the real ones; an app-level requirements.txt shadowing them is
+# an image with no google-genai in it.
+apps/*/.gitignore
+apps/*/requirements.txt
 
 # Runtime logs and traces
 run.log

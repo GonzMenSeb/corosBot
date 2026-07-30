@@ -349,3 +349,196 @@ no model ever sees it. The vendor's denial exists, and retrieval structurally ca
 Diverging from DecaBot, which has no equivalent: its catalogue is wide enough that "nothing
 matched" is nearly always the truth. COROS Colombia sells 45 products, so the gap between "we
 found nothing" and "there is nothing to find" is most of the catalogue.
+
+### 2026-07-30 · Brújula retrieves from a per-turn snapshot, not from a navigable surface
+
+DecaBot's retrieval is navigation: `list_collections` → `get_collection_products`, one storefront
+request per collection, because Decathlon's catalogue is thousands of SKUs and no turn can hold
+it. Brújula's tools are named the same — the ids are frozen in `capability.ToolId` — and do
+something structurally different: they all answer from **one** feed read the turn already paid
+for. Three reasons, in order of how much they cost to ignore.
+
+**The catalogue is 45 products in one request.** `products.json?limit=250` returns all of them,
+no pagination. A second request per group would buy a subset of products we are already holding,
+and buy it from the harshest limiter in this system — measured at ~4 requests before an IP-level
+lockout that outlasts the conversation. During this task's own exploration the storefront locked
+and stayed locked across three spaced probes, so `collections.json` was never verified; building
+`get_collection_products` on an unverified shape would have been the guess this repo does not
+make.
+
+**A search that matches nothing is therefore CONCLUSIVE.** `ToolOutcome.UNAVAILABLE` from
+`search_products` means "we read all 43 and none matched", which is real evidence — exactly what
+`check_buy_nothing(retrieval_conclusive=True)` needs and what a paginated surface can never
+supply. It also flips the honesty problem around: on DecaBot an empty result is usually a partial
+look, here it is usually the truth, and the tool says which.
+
+**No model-facing tool touches UCP.** `search_products` does not call UCP's `search_catalog`,
+and an AST scan in `tests/test_brujula_agent.py` keeps it that way. Two reasons compose: a UCP hit
+that is not in the snapshot cannot pass `check_provenance(candidates, catalog)` — that signature
+only accepts `CatalogProduct` — so a semantic path can only ever re-rank products we already
+have; and `create_cart` lives behind the same client, so a model-facing module able to post to
+`ucp.py` has re-opened the door `WITHHELD` exists to keep shut. UCP stays reachable from a click
+handler, which is the whole human-in-the-loop design: **UCP is the cart surface, and the model
+has no access to it at all.**
+
+Measured while deciding this, and worth writing down because the plan for this task said
+otherwise: `search_catalog` with `pagination.limit = 10` returned 10 products and
+`has_next_page: true`, not the 7-with-`false` the plan recorded. It paginates and it caps, so it
+was never going to be a complete view of a catalogue we can read completely in one request.
+Nothing depends on the number, which is why it is here and not in the facts registry.
+
+### 2026-07-30 · The three catalogue groups come from the device registry, never from the feed's own fields
+
+`list_collections` answers "what does COROS Colombia actually sell" with three groups —
+`relojes` (4), `correas` (26), `accesorios` (13) — and they are a **partition**: every visible
+product lands in exactly one, so nothing is double-counted and nothing is unreachable. A test
+asserts the partition and the three counts.
+
+The obvious taxonomy was `product_type`, and it cannot be used. It is empty on 24 of 45 products
+including the PACE 4, and it says `Relojes GPS` for the DURA, which COROS's own homepage labels
+a *ciclocomputador*. Tags are worse rather than better: `APEX Pro` on a charging cable is a
+compatibility claim, and compatibility has exactly one authority in this repo. Grouping on tags
+would have opened a second, uncurated device-matching path straight through the rule
+`tests/test_devices.py` enforces on `devices.py`. So `relojes` and `correas` are the two curated
+registry tables and `accesorios` is defined as the complement — everything the registry does not
+name — and an AST scan rejects any read of `product_type` or `tags` in `tools.py`.
+
+`list_collections` also takes no `query` parameter, unlike DecaBot's. Three groups do not need
+searching, and a parameter the model can get wrong is a parameter that produces a retry.
+
+Two related calls in the same file. `_slim()` does **not** forward the sanitised `description`:
+it is the injection surface, and 400 characters of marketing copy per product is an invitation to
+read a spec out of prose when the specs that matter — strap widths, compatibility — come from the
+registry with the sentence they were read from. And `lookup_device_compat` answers an APEX 4 with
+no case size by returning the *question* as `NOT_ELIGIBLE`, because an empty strap list there
+would read as "COROS sells no APEX 4 straps", which is false, and picking a case is a guess.
+
+### 2026-07-30 · A turn ends when the evidence bundle accepts, not when the model stops
+
+`loop.py` builds the bundle **before** the presentation call and presents nothing when
+`accepted` is False. That ordering is the decision: a recommendation whose required checks left
+no trace event behind never gets prose written for it, the person is told which check is missing
+instead, and no stage is marked done — so the next turn resumes rather than the case being
+closed with an answer nothing verified. The bundle is rebuilt after the scrub so its `prose` row
+reflects a check that had not run yet at gate time. KB §3.4.4: stopping after N iterations "is
+the most prevalent convergence pattern in the literature and represents the most significant gap
+in the field".
+
+Resumption is keyed on **completion, not emptiness**. `session.done` is a set of stage names, so
+an interview that asked nothing is not an interview that never ran; DecaBot's `if not
+session.slots` would re-ask on every turn. A message that arrives after a *finished*
+recommendation reopens `REOPENED` — the person is changing something, and answering from
+requirements they have replaced is worse than spending the calls again.
+
+Only a recommendation costs a presentation call. "Buy nothing", "COROS Colombia does not sell
+that", "I could not read the catalogue" and the capability dead ends are rendered from typed
+verdicts through `prompts.py`. Those are the four sentences a person is most likely to be lied
+to about, and generated prose is prose that can drift; the templates cannot.
+
+Two consequences worth stating. The buy-nothing verdict is checked **before** the item list, so
+a selection nothing can afford is reported as a buy-nothing rather than presented and then
+blocked — the honest answer and the verified one are the same answer. And the tool surface for
+retrieval is read off `capability.MAP` at call time instead of being hardcoded to
+`tools.DECLARATIONS`: an empty map raises a typed dead end, because a retrieval stage handed no
+tools answers from the model's memory.
+
+Two divergences from DecaBot's loop. It imports `catalog` directly rather than matching
+exception class names — there is one upstream here, the read happens in the loop, and no
+model-facing tool can reach another. And there is no `_repair` ladder for structured stages:
+provenance is enforced downstream by `check_provenance`, so a stage this loop cannot read fails
+the turn instead of being retried into something plausible.
+
+### 2026-07-30 · Response schemas are plain wire models, because `extra="forbid"` 400s
+
+Verified live against `google-genai` 2.14.0: handing Gemini a `response_schema` built from a
+model with `extra="forbid"` renders `additionalProperties` into the schema and the API answers
+`400 INVALID_ARGUMENT · Unknown name "additional_properties"`. `coros_core.models` sets
+`extra="forbid"` on every policy model on purpose — a model inventing
+`max_total_minor_override` must be rejected, not ignored — so none of them can cross the wire.
+
+`loop.SCHEMAS` is therefore four plain models, and each is validated into the frozen core model
+in code. That is not a workaround: the validation step is where a requirement key outside the
+allowlist, a `Provenance` label the model made up, and a derived value with no sample size are
+dropped with a trace event. A schema that had gone over the wire intact would have had to reject
+those on the model's side, which is the one place we do not control. A `str | int | bool` union
+renders as `anyOf` and is accepted; `budget_minor` came back an int on the same probe.
+
+### 2026-07-30 · The conversation lives outside Reflex state, for the cost and not the limit
+
+The plan said Reflex state cannot hold a dataclass, so `ConversationSession` had to live in a
+module-level map. Probed before building on it, and the claim is false: Reflex 0.9.7 accepts a
+dataclass state var, wraps it in a `MutableProxy`, tracks mutations through it and serialises it
+— sets included — to the browser.
+
+The map stays anyway, and now for a reason a reader can check. As a state var, every mutation the
+agent loop makes to the transcript, the extracted requirements and the finished advice is
+broadcast to the browser on the next drain, and `StateManagerDisk` pickles the same bytes into
+`.states/` per client token. A backend-only (`_`-prefixed) var fixes the wire half and not the
+disk half. `_SESSIONS` is process-local memory: the transcript never reaches either surface, and
+`state.trace` carries the clamped rows the panel actually renders instead.
+
+Two divergences from DecaBot's version of the same map. It is an `OrderedDict` bounded at
+`MAX_SESSIONS=200` with the oldest evicted, because these apps are hosted for weeks rather than
+demoed for an evening and an unbounded map is one transcript per browser that is never freed —
+and an evicted conversation costs the person an interview they already answered, which is a
+recoverable loss, never a fabricated answer. And it is still process-local, so the note in
+DecaBot's `AGENTS.md` holds here too: **1 granian worker is load-bearing.** Adding Redis or a
+second worker without moving this map out of module scope splits a conversation across processes.
+
+Two facts fell out of the tests and are registered in `AGENTS.md`. The
+`MutableProxy`/`json.dumps` trap is the *compact* encoder only — passing `indent=` selects the
+pure-Python path, which goes through `isinstance` and survives, so a mutation test that removes
+`plain()` passes against an indented dump and fails against a compact one. And
+`hmac.compare_digest` raises `TypeError` on non-ASCII `str`, so the gate compares
+`_digest(typed)` against `_GATE_DIGEST`: an accented password is a refusal, not a 500.
+
+### 2026-07-30 · One route, and the gate is a branch inside it
+
+Brújula serves a single page. `index()` is `rx.cond(State.unlocked, shell, gate)`, and there is
+no `/gate` route, because a second route is a second door: `on_load` is registered per page, so a
+URL that renders the shell is a URL where the password check never ran. The same reasoning keeps
+the trace panel, the kit and the evidence rail inside that one page rather than behind routes of
+their own — everything they show is a state var the gate already covers.
+
+`rxconfig.py` carries five values and every one of them is load-bearing. `app_module_import`
+because Reflex otherwise resolves `brujula.brujula`. `frontend_port`/`backend_port` pinned because
+Reflex takes the next available port when one is busy and moves the app out from under whatever is
+proxying it — and both apps run at once in dev. `vite_allowed_hosts=True` because False allows
+localhost only and every other host gets `403 Blocked request. This host is not allowed.` on a
+healthy app. And `api_url` stays `http://localhost:8000` so one image serves every domain: the
+compiled client rewrites a same-domain host to `window.location.hostname`, upgrades `ws:`→`wss:`
+and clears the port on https. `BRUJULA_API_URL` overrides it for a dev tunnel and is documented in
+`.env.example` — DecaBot's equivalent was read by code and named nowhere.
+
+Added over DecaBot: `disable_plugins=[SitemapPlugin]`. A password-gated single route has nothing
+to put in a sitemap, and left on, the plugin prints a startup warning asking to be told either
+way.
+
+**`rx.App(theme=...)` stays on the app, deliberately, against its own deprecation warning.** 0.9.7
+says to configure `rx.plugins.RadixThemesPlugin(theme=…)` in `rxconfig.py` instead. Taking that
+advice puts the theme somewhere that cannot read `brujula/ui/theme.py`'s tokens, because
+`get_config()` imports `rxconfig.py` with `sys.path` reduced to its own directory and only retries
+with the ambient path if that raises. Both halves verified 30 Jul 2026: an `import coros_core` in
+a probe `rxconfig.py` raises under a bare environment and succeeds with `packages/` on
+`PYTHONPATH`. So config files stay on `reflex` and the stdlib, the theme stays on `rx.App`, and
+`tests/test_brujula_app.py` fails if anyone follows the warning before the pin moves.
+
+The presentation in `app.py` is plain on purpose and holds no colour literal: every surface reads
+the Radix scale the theme selects (`var(--gray-11)`, `var(--red-11)`), so PR 5's measured tokens
+replace a theme argument rather than a hunt through the file. The accent is `bronze` on `sand` —
+warm paper over the COROS monochrome, red left free for the honest refusal, and nothing DecaBot's
+indigo would recognise. Two things were carried over verbatim because DecaBot paid for them: the
+composer is `position: sticky` at the bottom of the column, since with a kit on screen the column
+runs several thousand pixels and the reply to a clarifying question sits below all of it; and
+every icon-only-below-`md` button carries an `aria_label`.
+
+Two artifacts fell out of proving the tree compiles. `reflex export --frontend-only` **shrank**
+`reflex.lock/`: the markdown chain — `react-markdown`, `react-syntax-highlighter`, the
+rehype/remark plugins — is gone, because nothing in Brújula renders markdown and the presentation
+prompt asks for plain prose. That lockfile is derived from the component set, so it is re-exported
+and re-committed whenever the tree changes; the maintenance contract now says so. And `reflex
+init` — which any first run in a fresh clone triggers — seeded `apps/brujula/` with its own
+`.gitignore` and a `requirements.txt` containing only the reflex pin. Both are now gitignored, and
+`tests/test_layout.py` fails if either is committed: that requirements.txt shadows the root pins
+for anything installing from the app directory, which is an image with reflex and no
+`google-genai` in it, failing at the first model call instead of at build time.

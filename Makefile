@@ -6,7 +6,7 @@
 PYPATH := .:packages:apps/brujula:apps/huella
 VENV_PY := ./.venv/bin/python
 PY := PYTHONPATH=$(PYPATH) $(VENV_PY)
-.PHONY: setup check verify doctor fixtures dev-brujula dev-huella clean
+.PHONY: setup check verify doctor fixtures verify-brujula dev-brujula dev-huella clean
 
 setup:
 	python3.12 -m venv .venv
@@ -25,6 +25,11 @@ doctor:
 
 fixtures:
 	$(PY) scripts/dump_fixtures.py
+
+# Drives brujula.state.State for real — the live model, the live storefront. `reflex
+# export` proves the component tree compiles; it never runs a handler.
+verify-brujula:
+	$(PY) scripts/verify_brujula.py
 
 # reflex must run with the app directory as cwd: .web/ and reflex.lock/ resolve against
 # it. Ports are pinned per app in each rxconfig.py so both can run at once.
