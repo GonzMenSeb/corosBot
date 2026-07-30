@@ -1,0 +1,9 @@
+reflex==0.9.7
+google-genai==2.14.0
+httpx
+requests
+feedparser
+pydantic>=2
+python-dotenv
+pytest
+pytest-asyncio
