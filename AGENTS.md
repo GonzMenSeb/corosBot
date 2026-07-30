@@ -189,6 +189,48 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   `"Trail Run"`, `"TrailRun"`, `"TrackRun"`, `"Run"`, `"Trail Run"`, …). The model must
   not invent categories.
 
+### Gemini and the model client (`packages/coros_core/gemini.py`)
+
+All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
+
+- **Model `gemini-3.6-flash`, present in the live model list** as `models/gemini-3.6-flash`
+  under the shared credential. Spelled once, in `gemini.MODEL`; `generate()` defaults to it
+  so no call site repeats it, and an AST scan in `tests/test_gemini.py` enforces that.
+- **`tools=` must hold `types.Tool`, not `types.FunctionDeclaration`.** A bare declaration
+  raises `AttributeError: 'FunctionDeclaration' object has no attribute
+  'function_declarations'` from *inside* the SDK, before any HTTP call, for a
+  `GenerateContentConfig` and a plain dict config alike — so it reads as a bug in our code.
+  `gemini.as_tools()` collects bare declarations into one `Tool` and `generate()` runs every
+  config through it; a `Tool`, a dict and a plain callable pass through in place. Pinned in
+  `tests/test_contracts.py`.
+- **A `genai.Client` nobody holds closes its own transport.** `Client.__del__` calls
+  `close()`, and neither `client.models` nor `client.aio.models` keeps the client alive, so
+  `genai.Client(...).models.generate_content(...)` in one expression raises
+  `RuntimeError: Cannot send a request, as the client has been closed.` — never an API
+  error, never a code a caller can branch on. This is why `gemini.client` is `lru_cache`d
+  and why `generate()` binds the *client* for the whole retry ladder instead of
+  `.aio.models`. Do not "simplify" either one.
+- **`HttpOptions.timeout` is milliseconds.** `120_000` is two minutes. Without it a stalled
+  request hangs the turn forever, which from the outside is a crash.
+- **`generate_content` takes `model`, `contents`, `config` and nothing else** — there is no
+  `previous_interaction_id`. History is threaded client-side as `list[types.Content]`.
+- **429 is ordinary here, not exotic.** One per-project quota is shared by Brújula, Huella
+  and DecaBot (`vault_decabot_gemini_api_key`, by decision — there is no key pool and no
+  `bind_key()`, unlike DecaBot, which rotates one for a QR-code audience). `gemini-3.6-flash`
+  also answers 503 "experiencing high demand" intermittently. `generate()` retries
+  `{429, 500, 503, 504}` on a `(1.0, 3.0, 7.0)` s ladder — four attempts total — and then
+  re-raises the SDK error with `.code` intact, because which refusal it was decides what the
+  person is told. `errors.ClientError` and `errors.ServerError` both carry `.code`/`.status`.
+- **`.env` is loaded from two named absolute roots, and finding neither is not an error.**
+  `load_dotenv()` with no argument resolves against the *calling* file and silently finds
+  nothing. `gemini.env_candidates()` returns the repo root and — one directory shallower —
+  the flattened `/app` layout the image uses. A container is handed its environment by
+  docker's `env_file` and ships no `.env` at all.
+- For the app-layer Gemini facts this repo has not re-verified — `grounding_metadata` being
+  `None`, why built-in search may never share a request with custom tools, and
+  `response_schema` returning a typed `response.parsed` — read DecaBot `AGENTS.md:196-215`.
+  **Do not restate them here.**
+
 ### Rate limits and pacing
 
 - **No measurable rate limit on COROS UCP yet.** Decathlon's documented 20 sequential / 40
@@ -246,6 +288,11 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   `audit(products)` re-derives the whole join against the live feed so the registry never
   self-certifies. Nothing infers a fit from a width, a spec from a handle, or a device
   from a title outside `resolve()`.
+- **Nothing issues a model request except `gemini.py`.** `generate()` is the only call site,
+  `gemini.client()` the only constructor, and `gemini.MODEL` the only spelling of the model
+  name. Three AST scans in `tests/test_gemini.py` enforce all three — a docstring may name
+  the model, code may not. A second call site would bring its own retry ladder and its own
+  share of a quota three deployments already share.
 - **`create_cart` and `create_checkout` are not exposed as model tools.** Human-in-the-loop
   is enforced by *absence* from the tool list, not by a prompt instruction.
 - **Nothing retrieves from the catalog except `catalog.py`, and catalog.py never caches.**
@@ -321,6 +368,7 @@ rendered only from data; prose carries only reasoning.
 | `packages/coros_core/models.py` | `tests/test_models.py`, and `catalog.py`'s `map_product` if the change touches `CatalogProduct` or `CatalogVariant` |
 | any tool schema | `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
 | `packages/coros_core/ucp.py` (wire shape, error taxonomy, rate-limiting policy) | this facts registry + `tests/test_ucp.py` — the offline half and the `live` probes together |
+| `packages/coros_core/gemini.py` (the model name, the retry ladder, the tool normaliser) | `tests/test_gemini.py` + the Gemini entries in this facts registry, and the SDK pins in `tests/test_contracts.py`. Adding a call site is a change to *this* file: the AST scans reject a second one |
 | a guardrail | the guardrail table above + `tests/test_guardrails.py` + the trace event name. A check with no row in that table is a check nobody can review |
 | `packages/coros_core/trace.py` (event shape or levels) | every `emit(...)` call site, `tests/test_trace.py`, and the guardrail table's trace-event column |
 | `packages/coros_core/evidence.py` (a declared check, a required set, an assumption) | `tests/test_evidence.py` + the guardrail table. A check the bundle requires but nothing emits blocks every recommendation, so the two move together |

@@ -16,8 +16,10 @@ from typing import Any
 
 import httpx
 import pytest
+from google import genai
+from google.genai import errors, types
 
-from coros_core import catalog, ucp
+from coros_core import catalog, gemini, ucp
 from coros_core.money import major_string_to_minor
 
 FACTS = 'AGENTS.md "load-bearing facts"'
@@ -201,4 +203,63 @@ class TestProductTypeCannotIdentifyAWatch:
             f"catalog.map_product no longer carries product_type through untouched. {FACTS} "
             "says it passes through empty for PACE 4 unchanged. Update AGENTS.md and this test "
             "together."
+        )
+
+
+class TestTheSdkBreaksOnABareFunctionDeclaration:
+    """google-genai 2.14.0 raises `AttributeError` from inside itself, before any HTTP
+    call, when `tools=` holds a `FunctionDeclaration` instead of a `Tool`. It costs no
+    network to pin, and it is the reason `gemini.as_tools()` exists — if a release ever
+    accepts the bare shape, the wrapper becomes optional, not wrong."""
+
+    def _client(self) -> Any:
+        # Never sends: the shape error is raised while building the request. A real key
+        # here would still not reach Google.
+        return genai.Client(api_key="not-a-key", http_options=types.HttpOptions(timeout=gemini.TIMEOUT_MS))
+
+    @pytest.mark.parametrize("shape", ["typed", "dict"])
+    def test_a_bare_declaration_never_reaches_the_wire(self, shape: str) -> None:
+        declaration = types.FunctionDeclaration(name="list_collections", description="live COROS collections")
+        config: Any = (
+            types.GenerateContentConfig(tools=[declaration]) if shape == "typed" else {"tools": [declaration]}
+        )
+
+        held = self._client()
+        with pytest.raises(AttributeError) as caught:
+            held.models.generate_content(model=gemini.MODEL, contents="hola", config=config)
+
+        assert "function_declarations" in str(caught.value), (
+            f"google-genai no longer rejects a bare FunctionDeclaration ({caught.value}). {FACTS} "
+            "says the Tool wrapper is mandatory and that this fails before any HTTP call. Update "
+            "AGENTS.md, gemini.as_tools and this test together."
+        )
+
+    def test_a_client_nobody_holds_has_already_closed_its_transport(self) -> None:
+        """`genai.Client.__del__` closes the httpx transport, and `client.models` does not
+        keep the client alive — so the wrapper has to be held. This is why `gemini.client`
+        is `lru_cache`d and why `generate()` binds the client rather than `.aio.models`."""
+        with pytest.raises(RuntimeError) as caught:
+            self._client().models.generate_content(model=gemini.MODEL, contents="hola")
+
+        assert "has been closed" in str(caught.value), (
+            f"a dropped genai.Client no longer closes its transport (got {caught.value!r}). "
+            f"{FACTS} says it does, which is what the lru_cache in gemini.client is holding "
+            "open. Update AGENTS.md and this test together."
+        )
+
+    @pytest.mark.live
+    def test_the_wrapper_is_the_shape_that_gets_as_far_as_the_credential(self) -> None:
+        """Marked live because proving the request was *built* means letting it leave. It
+        spends no quota — the key is deliberately invalid."""
+        declaration = types.FunctionDeclaration(name="list_collections", description="live COROS collections")
+        config = types.GenerateContentConfig(tools=gemini.as_tools([declaration]))
+        held = self._client()
+
+        with pytest.raises(errors.ClientError) as caught:
+            held.models.generate_content(model=gemini.MODEL, contents="hola", config=config)
+
+        assert caught.value.code == 400, (
+            "the wrapped shape no longer gets as far as being rejected for a bad API key "
+            f"(got {caught.value}). That 400 is what proves the request was built, not refused "
+            "locally. Update AGENTS.md and this test together."
         )

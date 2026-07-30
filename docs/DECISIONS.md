@@ -282,3 +282,29 @@ how many characters — not the segment. `call_ucp` records argument NAMES and n
 Both for the same reason: an evidence bundle is an artifact a human pastes into a model, so
 a trace that quotes the injection verbatim launders it back into a prompt, and one that
 quotes an argument leaks whatever the argument was.
+
+### 2026-07-30 · One door to the model, and it corrects the shapes it is handed
+
+`generate()` in `packages/coros_core/gemini.py` is the only place a Gemini request is issued,
+the only place a `genai.Client` is built, and the only place the model name is spelled. Three
+AST scans in `tests/test_gemini.py` enforce that, for the reason `ucp.py` has its own scan: a
+second call site brings its own retry policy and its own share of a quota that Brújula, Huella
+and DecaBot all draw from. `model` defaults to `gemini.MODEL`, so an upgrade is one line rather
+than a grep.
+
+Two shapes are corrected rather than trusted, because both fail as an `AttributeError` or a
+`RuntimeError` from inside google-genai — errors that read as our bug and point at no fix. A
+bare `types.FunctionDeclaration` in `tools=` is wrapped by `as_tools()`; the config is
+`model_copy`d rather than edited, since module-level configs are shared between turns and a
+normaliser that writes to its caller's object is a second writer to something everything reads.
+And a `genai.Client` nobody holds closes its own transport in `__del__` while `client.aio.models`
+keeps working — so the client is `lru_cache`d and `generate()` binds the client, not the models
+object, for the whole ladder.
+
+Diverging from DecaBot on purpose: no key pool, no `bind_key()`, no `GEMINI_PUBLIC_KEYS`. That
+machinery exists there to spread a QR-code audience across keys; here the 29 Jul decision to
+reuse one credential makes it dead code, and dead auth machinery is worse than none. What the
+shared quota does earn is a `model.call` trace event carrying token counts — counts only, never
+the text, the same rule instrumentation follows everywhere in this repo — because burn against
+one shared quota is otherwise invisible until it runs out. Giving up after four attempts emits
+`model.failed` before re-raising, so a turn that died of quota is distinguishable from a crash.
