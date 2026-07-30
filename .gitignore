@@ -1,0 +1,39 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Reflex build output and per-session state. Both are cwd-relative, so every app
+# directory grows its own copy.
+.web/
+.states/
+# reflex.lock/ is NOT ignored: each app's Dockerfile COPYs it and .dockerignore
+# un-ignores it, so a clean clone cannot build an image without it.
+*.db
+
+# Runtime logs and traces
+run.log
+*.jsonl
+.reflex-*.log
+
+# Playwright MCP run artifacts
+.playwright-mcp/
+
+# Scraped brand assets — re-fetchable, never committed
+assets/external/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Agent scratch space. `.claude/worktrees/*` are git worktree gitlinks, and a
+# `git add -A` commits them as bare submodule entries that nobody can check out.
+.claude/
