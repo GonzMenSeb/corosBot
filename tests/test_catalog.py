@@ -817,3 +817,25 @@ def test_the_json_blog_feed_is_still_a_404(storefeed):
         f"`blogs/blog.json` answers {storefeed['blog_json']} now. {FACTS} says 404, which is\n"
         "  why the reader parses Atom and feedparser is a dependency."
     )
+
+
+@pytest.mark.live
+def test_no_live_product_measures_power(storefeed):
+    """`capability.py`'s `cycling_power` dead end says a power search can only end empty.
+    That is a claim about the live catalogue, so it is checked against the live catalogue —
+    on the fetch this module already made, not a second one."""
+    named = [
+        p["handle"]
+        for p in storefeed["raw"]["products"]
+        if any(t in f"{p['title']} {p['handle']}".lower() for t in ("potenci", "power", "vatio", "watt"))
+    ]
+    assert named == [], (
+        f"COROS Colombia now lists {named}. {FACTS} and capability.py both say it sells\n"
+        "  nothing that measures power — if that changed, `cycling_power` moves from\n"
+        "  DEAD_ENDS to MAP. Update AGENTS.md, capability.py and this test together."
+    )
+    bike = sorted(p["handle"] for p in storefeed["raw"]["products"] if "bike" in p["handle"])
+    assert bike == ["coros-bike-cadence-sensor", "coros-bike-speed-sensor"], (
+        f"the bike range is now {bike}, not cadence + speed. Stock may move freely — the\n"
+        "  range is what capability.py rests on. Update AGENTS.md and this test together."
+    )

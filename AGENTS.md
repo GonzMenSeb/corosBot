@@ -166,6 +166,21 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   Roles and tags are re-checked after unescaping, because `&lt;system&gt;` is a role
   marker too. Injection patterns cover Spanish as well as English: the storefront is
   Spanish and so is the likeliest attempt.
+- **The whole cycling range is two sensors, and neither measures power.** `COROS Bike
+  Cadence Sensor` and `COROS Bike Speed Sensor`, $159.000 each; the cadence one is **out
+  of stock** and the speed one is not (30 Jul 2026). No product in the feed — none of the
+  45 — measures power, in cycling or in running, and no title or handle names one. So
+  `cycling_power` is a `capability.py` dead end while `cycling_cadence` stays **capable**:
+  out of stock is `check_stock`'s answer about a product COROS makes and will restock, and
+  collapsing the two says COROS does not make a cadence sensor. Both sensors pair over
+  Bluetooth only — **"No compatible con dispositivos ANT+"**, their own words, which is
+  what the `ant_plus` dead end rests on.
+- **COROS denies running power itself, 4 916 characters past where anything can read it.**
+  The POD 2's FAQ asks "¿El POD 2 mide la potencia de funcionamiento?" and answers "No, el
+  POD 2 usa Effort Pace" — inside the 36 KB BeeFree template, and `DESCRIPTION_CHARS` is
+  400, so the sanitised prose stops long before it. The vendor's denial exists and
+  retrieval structurally cannot deliver it, which is why `running_power` is a typed dead
+  end carrying the sentence rather than a hope that the model reads far enough.
 - **The blog: `blogs/blog.json` is 404, and `blogs/blog.atom` serves 30 entries and
   ignores `?page=`.** `?page=2` returns the identical 30 ids. The site really has **58**
   articles under `/blogs/blog/` — that is `sitemap_blogs_1.xml`, and the 58–60 figure in
@@ -294,7 +309,15 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   the model, code may not. A second call site would bring its own retry ladder and its own
   share of a quota three deployments already share.
 - **`create_cart` and `create_checkout` are not exposed as model tools.** Human-in-the-loop
-  is enforced by *absence* from the tool list, not by a prompt instruction.
+  is enforced by *absence* from the tool list, not by a prompt instruction. They are named
+  in `capability.WITHHELD` as plain strings so the omission is auditable rather than a
+  silence, and a test asserts no `ToolId` carries either value — an id that cannot be
+  spelled cannot be offered. `ucp.call_ucp()` can still reach both from a click handler.
+- **Every tool name is spelled once, in `capability.ToolId`, and the map is the only
+  authority on which one can serve a request.** Both apps' schemas are written against
+  those ids; `SURFACES` says which app exposes each. `capable_tools()` returning `()` is
+  never a search result — `check_capability()` turns it into a typed dead end, and
+  `CapabilityVerdict` refuses to hold an empty tool list with no reason attached.
 - **Nothing retrieves from the catalog except `catalog.py`, and catalog.py never caches.**
   Live retrieval every turn; `fixtures/` is for offline development only and is never read
   by the running app.
@@ -321,6 +344,7 @@ live feed; an unbacked `"$X COP"` claim is rejected.
 | `find_unbacked_claims` / `scrub_prose` | `guardrail.prose` | a spec figure in prose has to appear in a retrieval-derived field. `AdviceItem.rationale` is not one of them |
 | `catalog.strip_untrusted` | `guardrail.untrusted_text` | an injected segment was removed from vendor free text. Emitted only when something was removed, and it carries counts — never the matched text, which an evidence bundle would paste back into a model |
 | `evidence.build` | `evidence.bundle` | the advice agrees with the verdicts, and every check a recommendation requires actually ran. Derived from the trace, so a stage cannot self-certify; a required check with no event means `accepted=False` |
+| `capability.check_capability` | `guardrail.capability` | a request no tool can serve is a typed `NO_CAPABILITY`, never an empty search that reads as "COROS has nothing". `CapabilityVerdict` cannot be built with no tools and no reason, and `DeadEnd.outcome` is restricted to the escalating outcomes so "out of stock" cannot be dressed as "does not exist" |
 
 Two rules inside that table are easy to undo by accident. **Ambiguity is a question, never
 a pick**: a product with two variants and none named is dropped, the same way
@@ -366,7 +390,8 @@ rendered only from data; prose carries only reasoning.
 | `packages/coros_core/devices.py` | `tests/test_devices.py` — the offline half and the `live` audit together — plus the device and strap-width entries in this facts registry. `audit()` is what proves a row still matches the feed; run `make verify` before believing a curated change |
 | `packages/coros_core/catalog.py` | `tests/test_catalog.py` — the offline half and the `live` probes together — plus the storefront section of this facts registry |
 | `packages/coros_core/models.py` | `tests/test_models.py`, and `catalog.py`'s `map_product` if the change touches `CatalogProduct` or `CatalogVariant` |
-| any tool schema | `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
+| any tool schema | `packages/coros_core/capability.py` (`ToolId`, `SURFACES`, `MAP`), `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
+| `packages/coros_core/capability.py` (a need, a dead end, the tool registry) | `tests/test_capability.py` + the guardrail table + the cycling-range entries in this facts registry. A need moving between `MAP` and `DEAD_ENDS` is a claim about the live catalogue: `tests/test_contracts.py` and the live probe in `tests/test_catalog.py` pin it, and both move in the same commit |
 | `packages/coros_core/ucp.py` (wire shape, error taxonomy, rate-limiting policy) | this facts registry + `tests/test_ucp.py` — the offline half and the `live` probes together |
 | `packages/coros_core/gemini.py` (the model name, the retry ladder, the tool normaliser) | `tests/test_gemini.py` + the Gemini entries in this facts registry, and the SDK pins in `tests/test_contracts.py`. Adding a call site is a change to *this* file: the AST scans reject a second one |
 | a guardrail | the guardrail table above + `tests/test_guardrails.py` + the trace event name. A check with no row in that table is a check nobody can review |

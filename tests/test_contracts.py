@@ -19,7 +19,7 @@ import pytest
 from google import genai
 from google.genai import errors, types
 
-from coros_core import catalog, gemini, ucp
+from coros_core import capability, catalog, gemini, ucp
 from coros_core.money import major_string_to_minor
 
 FACTS = 'AGENTS.md "load-bearing facts"'
@@ -262,4 +262,92 @@ class TestTheSdkBreaksOnABareFunctionDeclaration:
             "the wrapped shape no longer gets as far as being rejected for a bad API key "
             f"(got {caught.value}). That 400 is what proves the request was built, not refused "
             "locally. Update AGENTS.md and this test together."
+        )
+
+
+class TestTheCyclingRangeIsTwoSensorsAndNeitherMeasuresPower:
+    """The whole reason `capability.py` has a `no_product` dead end. COROS Colombia's
+    cycling range is a cadence sensor and a speed sensor; no product in the feed measures
+    power, so a power search can only ever end empty. Offline over the fixture — the live
+    half rides `tests/test_catalog.py`'s single feed fetch rather than opening a second."""
+
+    POWER_TOKENS = ("potenci", "power", "vatio", "watt")
+
+    def _feed(self) -> list[dict[str, Any]]:
+        return json.loads((REPO / "fixtures" / "products.json").read_text())["products"]
+
+    def test_nothing_in_the_catalogue_is_a_power_meter(self) -> None:
+        named = [
+            p["handle"]
+            for p in self._feed()
+            if any(t in f"{p['title']} {p['handle']}".lower() for t in self.POWER_TOKENS)
+        ]
+        assert named == [], (
+            f"products naming power now exist: {named}. {FACTS} and capability.py's "
+            "`cycling_power` dead end both say COROS Colombia sells none — if one appeared, "
+            "the need moves from DEAD_ENDS to MAP. Update AGENTS.md, capability.py and this "
+            "test together."
+        )
+
+    def test_the_two_bike_sensors_are_cadence_and_speed(self) -> None:
+        sensors = sorted(p["handle"] for p in self._feed() if "bike" in p["handle"])
+        assert sensors == ["coros-bike-cadence-sensor", "coros-bike-speed-sensor"], (
+            f"the bike range is now {sensors}. {FACTS} pins these two — update AGENTS.md and "
+            "this test together."
+        )
+
+    def test_the_cadence_sensor_is_out_of_stock_and_that_is_a_stock_answer(self) -> None:
+        """Recorded from the feed on 30 Jul 2026. A restock is expected and is NOT a
+        contract break, which is why this reads the frozen fixture: the fact being pinned
+        is that `cycling_cadence` stays *capable* while out of stock, so the person hears
+        "agotado" from check_stock and never "COROS no hace eso" from the capability map."""
+        cadence = next(p for p in self._feed() if p["handle"] == "coros-bike-cadence-sensor")
+        speed = next(p for p in self._feed() if p["handle"] == "coros-bike-speed-sensor")
+
+        assert not any(v["available"] for v in cadence["variants"])
+        assert any(v["available"] for v in speed["variants"])
+        assert "cycling_cadence" in capability.MAP and "cycling_cadence" not in capability.DEAD_ENDS, (
+            "an out-of-stock product became a capability dead end. Stock is check_stock's "
+            f"answer; {FACTS} says COROS makes this sensor. Update AGENTS.md and this test "
+            "together."
+        )
+
+    def test_neither_sensor_speaks_ant_plus(self) -> None:
+        for handle in ("coros-bike-cadence-sensor", "coros-bike-speed-sensor"):
+            product = next(p for p in self._feed() if p["handle"] == handle)
+            assert "ANT+" in product["body_html"], f"{handle} stopped mentioning ANT+ at all"
+            assert "No compatible con dispositivos ANT+" in product[
+                "body_html"
+            ] or "no es compatible" in product["body_html"].lower(), (
+                f"{handle} no longer denies ANT+. {FACTS} and capability.py's `ant_plus` dead "
+                "end rest on COROS's own sentence — update AGENTS.md and this test together."
+            )
+
+    QUESTION = "¿El POD 2 mide la potencia de funcionamiento?"
+
+    def test_coros_denies_running_power_in_its_own_words(self) -> None:
+        pod = next(p for p in self._feed() if p["handle"] == "coros-pod-2")
+        prose = " ".join(catalog.strip_untrusted(pod["body_html"], 40_000).split())
+        assert self.QUESTION in prose, (
+            f"the POD 2 FAQ no longer asks about running power. {FACTS} quotes it as the "
+            "evidence behind capability.py's `running_power` dead end."
+        )
+        answer = prose.split(self.QUESTION, 1)[1][:120]
+        assert "No, el POD 2 usa Effort Pace" in answer, (
+            f"COROS's answer changed: {answer!r}. If the POD 2 now measures running power, "
+            "`running_power` moves out of DEAD_ENDS. Update AGENTS.md, capability.py and this "
+            "test together."
+        )
+
+    def test_that_denial_never_reaches_the_model(self) -> None:
+        """Why the dead end has to be code. COROS answers this question itself, 4 916
+        characters into a 36 KB BeeFree template — and `DESCRIPTION_CHARS` is 400, so the
+        prose a model sees stops long before the FAQ. A model reasoning from the catalogue
+        cannot know the POD 2 does not measure running power."""
+        pod = catalog.map_product(next(p for p in self._feed() if p["handle"] == "coros-pod-2"))
+        assert self.QUESTION not in pod.description
+        assert "Effort Pace" not in pod.description, (
+            f"the POD 2's FAQ now survives truncation. {FACTS} records that it does not, "
+            "which is the reason capability.py carries the denial as a typed dead end "
+            "instead of trusting retrieval to surface it."
         )

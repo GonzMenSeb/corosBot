@@ -308,3 +308,44 @@ shared quota does earn is a `model.call` trace event carrying token counts — c
 the text, the same rule instrumentation follows everywhere in this repo — because burn against
 one shared quota is otherwise invisible until it runs out. Giving up after four attempts emits
 `model.failed` before re-raising, so a turn that died of quota is distinguishable from a crash.
+
+### 2026-07-30 · A capability the store does not have is a typed dead end
+
+`packages/coros_core/capability.py` answers one question before retrieval runs: is there any
+tool here that could serve this request? `capable_tools()` is the pure map; `check_capability()`
+turns an empty answer into a typed `DeadEnd` and emits `guardrail.capability`. The failure being
+designed out is the one KB `docs/lifeseek/SPEC.md` §4.2 calls the most dangerous silent failure
+there is — an empty result that reads as "COROS has nothing for you" when the truth is "nothing
+here could have looked". `CapabilityVerdict` makes it structural rather than disciplinary: no
+tools and no reason is not a constructible object, so the empty case cannot travel.
+
+The COROS-specific reason this earns a module. COROS Colombia's entire cycling range is a cadence
+sensor and a speed sensor; nothing in the 45-product feed measures power, in cycling or in
+running. Ask retrieval for a power meter and it returns the speed sensor — a real product, in
+stock, at a real price, for a capability it does not have. That is the substitution
+`check_local_availability` bans for devices, arriving through a door that check does not watch,
+and it is worse than an absent watch because no COROS product will ever satisfy it.
+
+Three distinctions inside it are load-bearing, and each one is a different answer to the person:
+
+- **Capability is not availability.** The cadence sensor is out of stock, so `cycling_cadence`
+  stays *capable* and `check_stock` reports the shelf. A dead end there would tell someone COROS
+  does not make a product it makes and will restock. `DeadEnd.outcome` is restricted to the two
+  escalating outcomes, so `UNAVAILABLE` cannot be dressed as a capability verdict at all.
+- **A person is not a missing tool.** `create_cart`/`create_checkout` are withheld by design, so
+  `place_order` is `NEEDS_HUMAN`. `NO_CAPABILITY` there would be a lie about the store. `WITHHELD`
+  names them as strings precisely so the omission is auditable instead of being a silence someone
+  re-adds; a test asserts no `ToolId` shares those values.
+- **A need nobody declared is a dead end, not a wildcard.** `need` is a normalised `str`, not the
+  `Need` literal: it arrives from a model, and a typo has to fail closed rather than raise out of
+  the gate meant to catch it. No alias table translates Spanish synonyms — "potenciómetro" is
+  ambiguous between the two power needs COROS answers differently, and picking one is a guess.
+
+The `running_power` dead end is the case that proves the map has to be code rather than a prompt
+line or a retrieval hope. COROS answers that exact question itself, in the POD 2's own FAQ — and
+4 916 characters into a 36 KB BeeFree template, where `DESCRIPTION_CHARS = 400` truncation means
+no model ever sees it. The vendor's denial exists, and retrieval structurally cannot deliver it.
+
+Diverging from DecaBot, which has no equivalent: its catalogue is wide enough that "nothing
+matched" is nearly always the truth. COROS Colombia sells 45 products, so the gap between "we
+found nothing" and "there is nothing to find" is most of the catalogue.
