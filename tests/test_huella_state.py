@@ -23,9 +23,11 @@ on both sides of `tools.MIN_SAMPLE`.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import json
 import textwrap
+from itertools import count
 from pathlib import Path
 from typing import Any, get_args
 
@@ -82,9 +84,14 @@ def _no_state_left_behind():
     privacy.forget_all()
 
 
-def ev(event: str, payload: dict[str, Any] | None = None, level: str = "info", seq: int = 1):
+# Hand-built events still have to arrive in order: the panel drains by sequence number,
+# so a helper handing every event the same one makes all but the first invisible.
+_seq = count(1)
+
+
+def ev(event: str, payload: dict[str, Any] | None = None, level: str = "info", seq: int = 0):
     return trace.TraceEvent(
-        seq=seq, ts=0.0, event=event, raw=json.dumps(payload or {}), level=level
+        seq=seq or next(_seq), ts=0.0, event=event, raw=json.dumps(payload or {}), level=level
     )
 
 
@@ -312,6 +319,75 @@ class TestTheSinkIsBoundBeforeTheTaskThatEmits:
         await drive(state, "corro trail", result(), monkeypatch)
 
         assert trace._sink.get() is None
+
+
+class TestTheDrainLeavesTheTurnItsOwnEvidence:
+    """The panel streams the sink while the turn runs and `evidence.build` reads that same
+    list after the presentation call. Both needs are served by one object, so a drain that
+    consumes it turns checks that ran into checks that never did."""
+
+    async def test_a_bundle_built_after_a_drain_still_sees_the_guardrails_that_ran(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(st, "_POLL_INTERVAL", 0.001)
+        advice = Advice(kind="recommend", items=(item(),), explanation="…")
+
+        async def _run(message: str, session: Any) -> loop.TurnResult:
+            start = trace.mark()
+            trace.emit("guardrail.provenance", {"renderable": 1}, "guardrail")
+            trace.emit("guardrail.stock", {"confirmed": 1}, "guardrail")
+            trace.emit("guardrail.budget", {"total_minor": PACE_4_MINOR}, "guardrail")
+            trace.emit("guardrail.local_availability", {"cleared": ["pace-4"]}, "guardrail")
+            trace.emit("guardrail.buy_nothing", {"considered": 4}, "guardrail")
+            # Stands in for the presentation call: long enough for the panel to drain
+            # what the guardrails just emitted, which is the whole seam. The scrub runs
+            # on the far side of it, exactly as `loop._present` does.
+            await asyncio.sleep(st._POLL_INTERVAL * 30)
+            trace.emit("guardrail.prose", {"claims": [], "kinds": []}, "guardrail")
+            return result(advice=advice, evidence=evidence.build(advice, trace.since(start)))
+
+        monkeypatch.setattr(st, "run_turn", _run)
+        state = fresh()
+        async for _ in state.send_message({"message": "corro trail"}):
+            pass
+
+        stale = sorted(c.name for c in state.checks if c.outcome == "not_run")
+        assert not stale, (
+            f"{stale} ran and the bundle reports them as never having run: the drain\n"
+            "  consumed the list `trace.current()` hands back, so the turn lost sight of\n"
+            f"  its own verdicts. See {FACTS}."
+        )
+        assert state.evidence_accepted is True
+        assert state.blocked is False, (
+            "a recommendation every guardrail cleared was withheld from the athlete, and\n"
+            "  the panel said nothing could be confirmed about it"
+        )
+
+    def test_the_drain_never_mutates_the_sink(self) -> None:
+        """The behavioural test above catches this through a real turn; this says which
+        line to delete when it fails."""
+        tree = ast.parse(textwrap.dedent(source_of(st.State._drain)))
+        fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
+        sink = next(a.arg for a in fn.args.args if a.arg != "self")
+        mutated = [
+            node.lineno
+            for node in ast.walk(tree)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and getattr(node.func.value, "id", "") == sink
+                and node.func.attr in ("clear", "pop", "remove", "append", "extend")
+            )
+            or (
+                isinstance(node, ast.Delete)
+                and any(getattr(t, "id", "") == sink for t in ast.walk(node))
+            )
+        ]
+        assert not mutated, (
+            f"_drain mutates {sink!r} at line(s) {mutated}. That list is the object\n"
+            "  `trace.current()` hands back, and `evidence.build` reads it AFTER the\n"
+            f"  presentation call — draining it destructively blocks the turn. See {FACTS}."
+        )
 
 
 class TestTheCaptionTellsTheTruthWhileTheTurnRuns:
