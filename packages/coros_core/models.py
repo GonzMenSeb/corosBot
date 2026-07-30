@@ -158,10 +158,16 @@ class IntentVerdict(BaseModel):
 
 
 class CatalogVariant(BaseModel):
-    """One size or colour of a product, normalised from the storefront feed."""
+    """One purchasable option of a product, normalised from the storefront feed.
+
+    `label` is COROS's own composite of whatever options that product defines —
+    `"Estándar / Nylon / Negro"`, `"Negro / 42mm"`, `"L / Blanco"` — so it is not a
+    size, and `option_names` on the product is what says which. `sku` is empty for 30
+    of 126 live variants; it is carried for display and never joined on."""
 
     variant_id: str
-    size_label: str = ""
+    label: str = ""
+    sku: str = ""
     price_minor: int
     available: bool
 
@@ -183,7 +189,13 @@ class CatalogProduct(BaseModel):
     product_type: str = ""
     vendor: str = ""
     tags: tuple[str, ...] = ()
+    # Names the components of each variant's `label`, in order.
+    option_names: tuple[str, ...] = ()
     variants: tuple[CatalogVariant, ...] = ()
+    # Sanitised `body_html`. Prose only — a spec is rendered from data, never from here.
+    description: str = ""
+    # Tagged `gwp-hidden`: a gift-with-purchase line, on the feed but not merchandise.
+    hidden: bool = False
 
     @property
     def in_stock(self) -> bool:
@@ -193,6 +205,19 @@ class CatalogProduct(BaseModel):
     def min_price_minor(self) -> int | None:
         prices = [v.price_minor for v in self.variants if v.available]
         return min(prices) if prices else None
+
+
+class Article(BaseModel):
+    """One COROS Colombia blog post, from the Atom feed. Content grounding only: an
+    article is a citable source for a claim about training or an event, never a source
+    of product facts — it is marketing copy about a lineup that has since moved on."""
+
+    article_id: str
+    title: str
+    url: Url
+    summary: str = ""
+    published: str = ""
+    author: str = ""
 
 
 class DeviceCase(BaseModel):

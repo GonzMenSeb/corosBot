@@ -84,3 +84,68 @@ Consequences worth naming:
   429 latches the process into serialised 1.5 s spacing for good. The latch never releases
   on a success, because a single call is served throughout a lockout. Simulated offline —
   inducing a real lockout to test it would cost the demo, which is the whole point.
+
+### 2026-07-30 · The storefront gets a circuit breaker, not a retry ladder
+
+The `products.json` limiter was measured rather than assumed, and the measurement inverts
+DecaBot's policy. It tolerates roughly **4 requests over 20 s**, then answers **429 /
+`Retry-After: 60` / `local_rate_limited`**. The hint is not honest and **retrying makes it
+worse**: after one 429, thirty requests spaced 10 s apart were all refused across five
+unbroken minutes; it cleared only after ~100 s of complete quiet, and a later lockout
+outlasted 120 s. Mid-lockout the connection is sometimes dropped outright
+(`ConnectTimeout`). A browser `User-Agent` was tested and ruled out as the discriminator.
+
+So `catalog.py` diverges from DecaBot's storefront transport in two ways:
+
+- **A 429 is never retried.** It latches, and every request inside a 90 s cooldown fails
+  immediately as `CatalogUnavailable(rate_limited=True)` **without a network call**. Sending
+  during a lockout is what sustains it, so the breaker protects the storefront from us and
+  the turn from a 60 s stall. `retry_after` is reported for the trace panel, never slept on.
+- **`SEM = Semaphore(1)`.** DecaBot allows 6 because it fetches ~24 collection feeds per
+  turn. The whole COROS catalogue is one document, so the only source of a burst is several
+  browser sessions at once — and a burst is the one thing measured to trip the limiter.
+  Serialising costs a second session about a second; a 429 costs it the turn.
+
+The retry ladder survives for `ConnectTimeout`, 5xx and a truncated body, which are the
+failures a retry can actually fix, inside a 10 s total budget because a turn is waiting.
+
+**Open, and deliberately not decided here:** `AGENTS.md` says catalog.py never caches and
+retrieval is live every turn. Under this limiter, two turns inside a minute can legitimately
+fail to reach the feed. The honest options are (a) surface it — "the storefront is
+rate-limiting us", no fabricated inventory — or (b) a short-TTL snapshot with the fetch time
+shown in the UI. This commit implements (a), which is the fail-closed direction and needs no
+permission. Revisit when the agent loop lands and the real per-turn request count is known.
+
+### 2026-07-30 · Untrusted catalog text is sanitized by element, not by tag
+
+DecaBot's `strip_untrusted` replaces every tag with a newline and keeps what is between
+them. Run against COROS that returns **pure CSS** for the two richest products:
+`coros-pod-2` is 36 160 characters of BeeFree email template and `coros-apex-4` opens with a
+CSS reset, so 400 characters of stylesheet reach the model and the real copy is truncated
+away. `catalog.py` therefore removes the **content** of `style`, `script`, `head`,
+`noscript`, `svg` and `template`, and an unclosed one swallows the remainder of the document
+— the safe direction.
+
+The alternative considered was a CSS-shaped segment filter. It was measured on the full
+corpus — all 45 descriptions and all 30 articles, 1 931 segments — and rejected: precise
+element removal leaves **zero** CSS behind, while the fuzzy filter dropped **22 segments of
+real copy** (store hours, `@coroscolombia`, `www.coros.com.co`, a NIT). Precision comes from
+knowing which elements are opaque, not from guessing which sentences look like code.
+
+Second divergence, in the same function: **tags are stripped before unescaping.** One live
+article contains `href="&gt;https://support.coros.com/…"`, and unescaping first turns that
+`&gt;` into a real `>` that ends the tag early and spills the URL and a `style="color: rgb(…)"`
+attribute into the prose. Roles and tags are re-checked afterwards, because `&lt;system&gt;`
+is a role marker too. Injection patterns cover Spanish as well as English — the storefront is
+Spanish — with zero false positives over the same 1 931 segments.
+
+### 2026-07-30 · Gift-with-purchase products are excluded, and flagged rather than dropped
+
+Two of the 45 products are dress shirts tagged `gwp-hidden`, in stock at $120.000:
+`camisa-blanca-hombre` and `camisa-blanca-mujer`. Nothing in the feed marks them as
+non-merchandise except that tag, and recommending one for a trail ultra is the cheapest
+available embarrassment. `get_products()` excludes them by default — hence 43, not 45 — and
+`include_hidden=True` returns them with `CatalogProduct.hidden` set, so the count discrepancy
+is explainable without reading the source. A filter that empties the result raises
+`CatalogUnavailable` rather than returning nothing, on the same principle as an empty feed:
+"nothing is available" is an inventory claim, and we do not invent those.

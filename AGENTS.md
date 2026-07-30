@@ -86,14 +86,58 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
 ### COROS storefront catalog and retrieval
 
 - **Single page, 45 products.** `GET /products.json?limit=250` returns the complete COROS
-  Colombia catalog in one request, no pagination. Product count verified live 29 Jul 2026.
+  Colombia catalog in one request, no pagination; the only top-level key is `products`.
+  Verified live 29 and 30 Jul 2026.
 - **Retrieval must use `requests` MODULE, not a Session.** Reused connections are refused
   with 429, which cascades to the UCP rate limiter. See DecaBot `AGENTS.md:111-128` for the
   measured evidence; the pattern is identical here. `catalog.py` uses `requests.get()`, not
-  a pooled session.
-- **Sizes arrive phrased the way the customer said them** — `"US 10.5"`, `"men's L"`,
-  `"size 8"` — while feed labels are bare (`"10.5"`, `"L"`). `_clean_request()` strips that
-  noise before matching. Without it, exact in-stock matches fail and the agent substitutes.
+  a pooled session. Enforced by an AST scan in `tests/test_catalog.py` — the docstring is
+  free to explain what a Session is, the code may not construct one.
+- **`product_type` is empty on 24 of 45 products (53%)**, PACE 4 included. The four values
+  in use are `""`, `Accesorios`, `Bandas`, `Relojes GPS`. Carried through normalization and
+  never keyed on; `devices.py` is the registry.
+- **A handle is a URL slug, not a description, and one of them lies outright.**
+  `correa-de-nylon-de-24-mm-morada-para-apex-4-46-copia` is a **22 mm white silicone**
+  strap for the **APEX 4 42** — title, option label and photo all agree with each other and
+  disagree with the handle. Somebody duplicated a product and edited everything but the
+  URL. Nothing derives a spec from a handle; titles and option labels are the sources.
+- **`sku` is null on 30 of 126 variants** and normalizes to `""` — never the string
+  `"None"`. Nothing joins on a sku; it is carried for display.
+- **`"Default Title"` is Shopify's placeholder** for the 10 products with exactly one
+  variant, and `"Title"` the matching option name. Both normalize to `""`: rendered
+  verbatim they read to a shopper as a choice they have to make.
+- **Two products are tagged `gwp-hidden`** — `camisa-blanca-hombre` and
+  `camisa-blanca-mujer`, gift-with-purchase dress shirts, in stock and priced at
+  $120.000. `get_products()` excludes them by default, which is why the usual count is 43
+  and not 45. They are flagged, not dropped, so the discrepancy is explainable.
+- **Variant labels are colour/material/series composites, not sizes.** `Serie / Material
+  de la correa / Color` on PACE 4, `Color / Tamaño` on APEX 4 (where `Tamaño` is the 42 mm
+  or 46 mm case), bare `Color` on 35 of them. This corrects the entry inherited from
+  DecaBot about phrased shoe sizes: COROS sells watches, and the only `Talla` options in
+  the feed belong to the two hidden shirts. `option_names` on `CatalogProduct` is what
+  says which component is which.
+- **`body_html` is not prose.** The largest is 36 160 characters of a **BeeFree email
+  template** (`coros-pod-2`): meta tags, a Google Fonts link, a full stylesheet, then the
+  copy. `coros-apex-4` is 19 981 characters opening with a CSS reset. So the sanitizer
+  must remove the **content** of `style`/`script`/`head`/`noscript`/`svg`/`template`, not
+  just the tags — DecaBot's sanitizer replaces tags with newlines and returns **pure CSS**
+  for both of those products. Fuzzy CSS sniffing is *not* the fix: measured over all 45
+  descriptions and all 30 articles (1 931 segments), precise opaque-element removal leaves
+  zero CSS behind, while a looser sniffer ate 22 segments of real copy (store hours, an
+  Instagram handle, a NIT). `coros-dura` is 2 825 characters of nothing but `<img>` tags
+  and correctly sanitizes to `""` — that is a fact about the feed, not a failed fetch.
+- **Tags are stripped BEFORE unescaping, and that order is load-bearing.** One live
+  article contains `href="&gt;https://support.coros.com/…"`. Unescape first and that
+  `&gt;` becomes a real `>` that ends the tag early, spilling the URL and a
+  `style="color: rgb(255, 255, 255);"` attribute into the copy as if a human wrote it.
+  Roles and tags are re-checked after unescaping, because `&lt;system&gt;` is a role
+  marker too. Injection patterns cover Spanish as well as English: the storefront is
+  Spanish and so is the likeliest attempt.
+- **The blog: `blogs/blog.json` is 404, and `blogs/blog.atom` serves 30 entries and
+  ignores `?page=`.** `?page=2` returns the identical 30 ids. The site really has **58**
+  articles under `/blogs/blog/` — that is `sitemap_blogs_1.xml`, and the 58–60 figure in
+  the plan came from there — but they are not reachable through the feed, so there is no
+  pagination loop to write. A second blog handle `nn` exists with no articles.
 
 ### Strava integration (Huella only)
 
@@ -118,9 +162,30 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   concurrent is a safe working assumption; DecaBot `AGENTS.md:66-81` covers pacing policy.
   COROS has not triggered the same lockout. If it does, apply the same latch-pacing rule
   (Semaphore, never un-latch on success).
-- **Storefront has its own limiter**, separate from UCP. Observed 29 Jul 2026: a burst of
-  6 concurrent reads to `products.json` returned 429 from the storefront even before UCP
-  was touched. Use the unpooled pattern and back off on 429 with a budget.
+- **Storefront has its own limiter**, separate from UCP, and it is the harsher of the two.
+  Measured against `products.json` on 30 Jul 2026:
+  - It tolerates a short burst — **4 requests over ~20 s were served** — then refuses with
+    HTTP **429**, `Retry-After: 60`, Cloudflare, body `local_rate_limited` as `text/plain`.
+  - **The hint is not honest and polling prolongs the lockout.** After one 429, **30
+    consecutive requests spaced 10 s apart were all refused, for five unbroken minutes.**
+    It cleared after ~100 s of *complete quiet*, and a later lockout outlasted 120 s.
+  - So **a 429 is never retried and never polled.** It latches, and every request inside
+    the cooldown fails immediately as a typed `CatalogUnavailable(rate_limited=True)`
+    **without touching the network**. Our own retry is the thing keeping the door shut.
+    Two divergences from DecaBot, which spaces and keeps sending, and retries a 429 to its
+    budget. The latch still **decays** (unlike `ucp.py`'s): the feed is one request per
+    turn, so a permanent latch would end the session over one transient refusal.
+  - Mid-lockout some attempts get **no response at all** — the connection is dropped and
+    `requests` raises `ConnectTimeout`. A network exception is the same condition in
+    different clothes, and is retried only while the latch is open.
+  - **The `User-Agent` is not the discriminator.** A browser UA was served four times in a
+    row and then refused exactly like `python-requests/2.x`; the apparent success was the
+    cooldown expiring. Do not "fix" a 429 by spoofing a header.
+  - Consequence for `make verify` and for demos: **`tests/test_catalog.py`'s live probes
+    skip rather than fail on a lockout**, and two turns inside a minute can legitimately
+    fail to reach the catalog. Whether that is answered with an honest "the storefront is
+    rate-limiting us" or with a retrieval cache is an open decision — see
+    `docs/DECISIONS.md`, 30 Jul 2026.
 
 ### Reflex / frontend and serving
 
@@ -189,7 +254,8 @@ rendered only from data; prose carries only reasoning.
 |---|---|
 | `packages/coros_core/money.py` | `tests/test_money.py` + the price-scaling entry in this facts registry |
 | `packages/coros_core/devices.py` | `tests/test_contracts.py` with a live probe of the storefront + the device-matching entry in this facts registry |
-| `packages/coros_core/catalog.py` | `tests/test_contracts.py` with the product count and the unpooled-retrieval entry |
+| `packages/coros_core/catalog.py` | `tests/test_catalog.py` — the offline half and the `live` probes together — plus the storefront section of this facts registry |
+| `packages/coros_core/models.py` | `tests/test_models.py`, and `catalog.py`'s `map_product` if the change touches `CatalogProduct` or `CatalogVariant` |
 | any tool schema | `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
 | `packages/coros_core/ucp.py` (wire shape, error taxonomy, rate-limiting policy) | this facts registry + `tests/test_ucp.py` — the offline half and the `live` probes together |
 | a guardrail | the guardrail table + its test + the trace event |
