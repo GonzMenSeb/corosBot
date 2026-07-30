@@ -21,10 +21,13 @@ API_URL = os.environ.get("BRUJULA_API_URL", "http://localhost:8000")
 # perfectly and does nothing. Requests carrying no Origin at all are not checked
 # (`engineio/async_server.py:227`), which is why the deploy health-check's curl websocket probe
 # is unaffected. Unlike `api_url` this is read at worker boot, not baked into the bundle.
-DEV_ORIGIN = "http://localhost:3000"
+# Both spellings of the dev frontend, because engineio compares the Origin header as an exact
+# string (`origin not in allowed_origins`, async_server.py:229) and a browser sends whichever
+# host was typed. With only one of these, opening the other renders the page and never connects.
+DEV_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
 ALLOWED_ORIGINS = [
     origin.strip()
-    for origin in os.environ.get("BRUJULA_ALLOWED_ORIGINS", DEV_ORIGIN).split(",")
+    for origin in os.environ.get("BRUJULA_ALLOWED_ORIGINS", DEV_ORIGINS).split(",")
     if origin.strip()
 ]
 

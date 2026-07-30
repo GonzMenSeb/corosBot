@@ -140,14 +140,19 @@ class TestRxconfigCarriesTheFactsThatCostADemo:
             "allow_credentials=True. See AGENTS.md, 'The OAuth callback route'."
         )
 
-    def test_the_dev_origin_is_allowed_when_nothing_is_configured(self) -> None:
-        """The list also gates the socket.io handshake (`reflex/app.py:540`), so dropping the
-        dev origin does not fail loudly — it renders the page and never connects."""
-        assert config("brujula").cors_allowed_origins == ["http://localhost:3000"], (
-            "the default allowed origin is no longer the dev frontend on :3000.\n"
-            "rxconfig pins frontend_port=3000, and the browser loads the page from there while\n"
-            "the backend answers on :8000 — a cross origin. Narrowing this without it means a\n"
-            "local dev run renders perfectly and does nothing at all."
+    def test_both_spellings_of_the_dev_origin_are_allowed_by_default(self) -> None:
+        """The list also gates the socket.io handshake (`reflex/app.py:540`), and engineio
+        compares the Origin header as an exact string — `origin not in allowed_origins`,
+        `async_server.py:229`. A browser sends whichever host was typed, so `localhost` and
+        `127.0.0.1` are two different origins and shipping only one of them means opening the
+        other renders the page and never connects."""
+        assert config("brujula").cors_allowed_origins == [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ], (
+            "the default allowed origins are no longer both spellings of the dev frontend on\n"
+            ":3000. rxconfig pins frontend_port=3000 and the backend answers on :8000, so the\n"
+            "dev browser is always cross-origin. Dropping either spelling does not fail loudly."
         )
 
     def test_the_hosted_origin_replaces_the_dev_one_rather_than_joining_it(
