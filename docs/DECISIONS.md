@@ -462,3 +462,32 @@ allowlist, a `Provenance` label the model made up, and a derived value with no s
 dropped with a trace event. A schema that had gone over the wire intact would have had to reject
 those on the model's side, which is the one place we do not control. A `str | int | bool` union
 renders as `anyOf` and is accepted; `budget_minor` came back an int on the same probe.
+
+### 2026-07-30 · The conversation lives outside Reflex state, for the cost and not the limit
+
+The plan said Reflex state cannot hold a dataclass, so `ConversationSession` had to live in a
+module-level map. Probed before building on it, and the claim is false: Reflex 0.9.7 accepts a
+dataclass state var, wraps it in a `MutableProxy`, tracks mutations through it and serialises it
+— sets included — to the browser.
+
+The map stays anyway, and now for a reason a reader can check. As a state var, every mutation the
+agent loop makes to the transcript, the extracted requirements and the finished advice is
+broadcast to the browser on the next drain, and `StateManagerDisk` pickles the same bytes into
+`.states/` per client token. A backend-only (`_`-prefixed) var fixes the wire half and not the
+disk half. `_SESSIONS` is process-local memory: the transcript never reaches either surface, and
+`state.trace` carries the clamped rows the panel actually renders instead.
+
+Two divergences from DecaBot's version of the same map. It is an `OrderedDict` bounded at
+`MAX_SESSIONS=200` with the oldest evicted, because these apps are hosted for weeks rather than
+demoed for an evening and an unbounded map is one transcript per browser that is never freed —
+and an evicted conversation costs the person an interview they already answered, which is a
+recoverable loss, never a fabricated answer. And it is still process-local, so the note in
+DecaBot's `AGENTS.md` holds here too: **1 granian worker is load-bearing.** Adding Redis or a
+second worker without moving this map out of module scope splits a conversation across processes.
+
+Two facts fell out of the tests and are registered in `AGENTS.md`. The
+`MutableProxy`/`json.dumps` trap is the *compact* encoder only — passing `indent=` selects the
+pure-Python path, which goes through `isinstance` and survives, so a mutation test that removes
+`plain()` passes against an indented dump and fails against a compact one. And
+`hmac.compare_digest` raises `TypeError` on non-ASCII `str`, so the gate compares
+`_digest(typed)` against `_GATE_DIGEST`: an accented password is a refusal, not a 500.

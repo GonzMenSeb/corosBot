@@ -298,7 +298,25 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   3000, backend 8000), one port in prod (both on 8000), compile into `.web/build/client`,
   domain-agnostic `api_url=http://localhost:8000`, skip-compile in prod, `granian` not
   `uvicorn`, session state to `./.states` on disk (DISK state manager, not NOOP).
-- **Do NOT re-read those sections here. Link to DecaBot's AGENTS.md.**
+- **Do NOT re-read those sections here. Link to DecaBot's AGENTS.md.** The three entries
+  below are ours, and correct or sharpen what that file says.
+- **Reflex 0.9.7 DOES hold a dataclass state var** — verified 30 Jul 2026. It wraps one in a
+  `MutableProxy`, tracks mutations through it and serialises it (sets and all) to the
+  browser. So "Reflex state cannot hold a dataclass" is not why `ConversationSession` lives
+  in `state._SESSIONS`: the reason is **cost**. As a state var, every mutation the agent loop
+  makes to the transcript, the requirements and the advice is broadcast to the browser, and
+  `StateManagerDisk` pickles the same bytes into `.states/`. Backend-only (`_`-prefixed) vars
+  stay off the wire but are still pickled. Pinned by
+  `tests/test_brujula_state.py::TestTheConversationDoesNotLiveInAStateVar`.
+- **The `MutableProxy` / `json.dumps` trap is the COMPACT path only.** The C encoder does an
+  exact type check, misses the proxy and falls through to `default=`, so a payload comes out
+  as a Python repr inside a JSON string. Passing `indent=` selects the pure-Python encoder,
+  which goes through `isinstance` and survives — so removing `state.plain()` breaks a compact
+  dump and silently passes an indented one. `plain()` runs regardless.
+- **`hmac.compare_digest` raises `TypeError` on non-ASCII `str`.** Comparing the passwords
+  themselves therefore turns an accented password — in a Spanish app, the likely kind — into a
+  500 rather than a refusal. `state._digest()` is what gets compared: hex, ASCII, equal
+  length, which is what a constant-time comparison wants anyway.
 
 ## Module boundaries — enforced socially, and worth it
 
@@ -440,6 +458,7 @@ rendered only from data; prose carries only reasoning.
 | `packages/coros_core/evidence.py` (a declared check, a required set, an assumption) | `tests/test_evidence.py` + the guardrail table. A check the bundle requires but nothing emits blocks every recommendation, so the two move together |
 | `apps/brujula/brujula/agent/tools.py` (a tool, a group, `_slim`'s whitelist) | `tests/test_brujula_agent.py` + `brujula/agent/prompts.py`, whose stage prompts describe the tools by name + the guardrail table's four `tools.*` rows. A key added to `_slim` is a change to every prompt that renders one |
 | `apps/brujula/brujula/agent/prompts.py` (a stage, a template) | `tests/test_brujula_agent.py` — one test asserts a canned template exists for every non-advice `Intent`, so a new intent without one is a model call spent letting the model improvise a refusal |
+| `apps/brujula/brujula/state.py` (a var, a caption, the gate) | `tests/test_brujula_state.py`. A caption key must be an event something actually emits or it can never fire; a new `RequirementKey` needs a word in `_REQUIREMENT_ES` and a new declared check needs one in `_CHECK_ES`, or the rail shows an English enum to a Colombian reader; a new handler that spends a model call or reaches COROS needs the `GATE_ON and not self.unlocked` re-check, because conditional rendering is not a guard |
 | `apps/brujula/brujula/agent/loop.py` (a stage, a budget, a wire model) | `tests/test_brujula_agent.py` + the guardrail table's `loop.*` rows. A new stage needs a name in `REOPENED` or it re-runs on every resume; a new `response_schema` needs a place in `loop.SCHEMAS` or nothing checks it for the `additionalProperties` 400; a check the bundle can block on needs a Spanish name in `loop._CHECKS_ES` or the person is told a check failed without being told which |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md` |
