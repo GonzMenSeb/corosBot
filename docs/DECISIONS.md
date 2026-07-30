@@ -1085,3 +1085,51 @@ The general shape is worth keeping: **a placeholder convention is only safe wher
 tests for the placeholder, and this codebase tests for truthiness.** `CHANGE_ME` is fine for
 `vault_brujula_password`, where any non-empty value is a working gate. It is not fine for a
 credential that is validated by a third party.
+
+### 2026-07-30 · Huella's stylesheet was ahead of its components, and the gate was the gap
+
+Huella's UI was reported as thin next to Brújula's. Measured rather than assumed, and the
+premise held in one place and inverted in another.
+
+**Where it held.** The gate was a left-aligned lockup over a single row — field, reveal
+toggle and submit crammed together — with no reason given for the lock, no busy state, no
+error affordance beyond a line of text, and no footer. Brújula's, by contrast, is a centred
+lockup, a blurb, a stacked full-width field/error/submit, and a footer. The gate was also
+the one Huella surface with no module of its own: it lived inline in `app.py`, which is why
+it lagged while `advice.py` (677 lines) and `trace_panel.py` grew past their Brújula
+counterparts.
+
+**How the gap was found without guessing.** Three `hu-` rule sets were defined in
+`assets/huella.css` and named by no component: `hu-shake`, `hu-dock` and `hu-skip`. Each
+belonged to exactly one of the unfinished surfaces — the gate's refusal, the composer, and
+the skip link — and `hu-shake`'s own comment names this screen ("the gate card is the whole
+page, so the refusal has to be felt"). The stylesheet had described the intended design and
+the components never adopted it. `tests/test_huella_ui.py` said so in a docstring and
+treated it as permanent.
+
+**What was NOT done, and why.** No entrance animation was added. `huella.css` states the
+kit's arrival is "the only thing in the app with an entrance — nothing else rises", and
+`test_the_animated_classes_are_the_three_this_suite_knows_about` pins `ANIMATED` to exactly
+`hu-kit`, `hu-pulse`, `hu-shake` — so an `hu-rise` would have failed a test as well as
+contradicted a stated decision. The gate card does not rise. No Brújula token crossed over
+either: the two palettes are separately measured, and the gate is INK on DASH with a TRACE
+rule, not paper and brass.
+
+**One thing the browser caught that no test could.** With the well styled and `auto_focus`
+on the field, three rings stacked: Radix's own inset ring, the well's `_focus_within`, and
+the stylesheet's global `:focus-visible` outline on the `<input>`. A style prop cannot fix
+the last one — Reflex puts props on Radix's TextField **Root** while the outline is on the
+`<input>` inside it — which is precisely the job `.hu-dock` already did for the composer.
+So the gate's well carries `hu-dock` too, and the class is now documented as belonging to
+any wrapper that draws its own field rather than to the composer alone.
+
+**Unrelated finding, recorded here because it is the same failure mode one app over.**
+Brújula's components name `bj-halo`, `bj-rise`, `bj-shake`, `bj-clamp-2`, `bj-scroll` and
+`bj-rail`; `assets/brujula.css` defines only `.brujula-*` and has no `rise` at all; and
+`brujula/app.py` passes `stylesheets=[FONT_HREF]`, never registering the file. Verified
+against production: neither prefix appears in the served bundle, and `/brujula.css` is
+reachable but unlinked. Every class-driven behaviour in Brújula — the halo, the refusal
+shake, the custom scrollbars, the clamp, the skip link, the sr-only text — is inert. Not
+fixed here: it is a different app, and AGENTS.md's mark entry asserts the halo *is*
+`bj-halo` with a reduced-motion swap, so the registry and `tests/test_brujula_brand.py`
+have to move in the same commit.

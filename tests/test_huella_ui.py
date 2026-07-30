@@ -57,13 +57,13 @@ from coros_core.trace import Level
 
 from huella import app
 from huella.state import ProductCard, State
-from huella.ui import advice, connect, theme, trace_panel, training
+from huella.ui import advice, connect, gate, theme, trace_panel, training
 
 UI = pathlib.Path(theme.__file__).parent
 ASSETS = UI.parent.parent / "assets"
 STYLESHEET = ASSETS / "huella.css"
 
-MODULES = ("brand", "connect", "training", "advice", "trace_panel")
+MODULES = ("brand", "connect", "gate", "training", "advice", "trace_panel")
 # The modules that stay on the instrument. `connect.py` is the exception and it is a theme
 # rule, not a taste: `theme.EDGE_ON["STRAVA"]` names SHEET and nothing else. `brand.py` is
 # absent because tests/test_huella_brand.py asks it the same question, and one property
@@ -302,6 +302,7 @@ def entries() -> dict[str, rx.Component]:
     component a Var, and a real `ProductCard` has no `.length()` on its list fields.
     """
     return {
+        "gate.screen": gate.screen(),
         "connect.notices": connect.notices(),
         "connect.panel": connect.panel(),
         "connect.attribution": connect.attribution(),
@@ -937,16 +938,15 @@ class TestEveryClassNamedHereIsARuleTheStylesheetHas:
 
     @pytest.mark.parametrize("name", ANIMATED)
     def test_each_animation_has_a_reduced_motion_alternative_not_an_off_switch(self, name: str) -> None:
-        """A contract between the two halves of assets/huella.css, and for one class that is all.
+        """A contract between the two halves of assets/huella.css, and now for all three.
 
-        `hu-shake` is applied by nothing in the app. Neither branch of the page renders it —
-        `app._gate()`'s error arm is a plain `rx.text(..., role="alert")` with no class on the
-        card — so that parameter checks a pair of rules no browser ever reaches, and it is not
-        evidence that the gate's refusal has a still alternative on screen. It has no motion on
-        screen to replace. The rule stays because deleting it would cost the reduced-motion
-        block an entry the moment the class is wired up, and because ANIMATED is derived from
-        the stylesheet rather than typed. `hu-kit` and `hu-pulse` are the two that are really
-        applied — `advice.kit()` and `brand.PULSE_CLASS` — and those two are real coverage.
+        `hu-shake` used to be applied by nothing: the gate's error arm was a plain
+        `rx.text(..., role="alert")` with no class on the card, so this parameter checked a
+        pair of rules no browser ever reached. `huella/ui/gate.py` wires it — the class sits
+        on the wrapper box around the form, conditioned on `State.gate_error`, and stays on
+        while the error stands so the reduced-motion alternative outlives the lurch it
+        replaces. All three are real coverage now: `advice.kit()`, `brand.PULSE_CLASS` and
+        `gate.SHAKE_CLASS`.
         """
         replacements = [
             (selector, body) for selector, body in REDUCED_RULES if f".{name}" in selector
