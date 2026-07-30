@@ -542,3 +542,53 @@ init` — which any first run in a fresh clone triggers — seeded `apps/brujula
 `tests/test_layout.py` fails if either is committed: that requirements.txt shadows the root pins
 for anything installing from the app directory, which is an image with reflex and no
 `google-genai` in it, failing at the first model call instead of at build time.
+
+### 2026-07-30 · Brújula's palette: COROS's values, and red inverted to the refusal
+
+`apps/brujula/brujula/ui/theme.py` is anchored on the seven values coros.com.co publishes as
+CSS custom properties, and on one reading of them. Their storefront is white, black and grey,
+and its only warmth is `--color-border: #EEEEE0` — a warm ivory hairline on an otherwise
+neutral page. Brújula takes that single value as its premise: the page is paper, the type is
+COROS's own `#161d25`, and the accent is brass, a compass needle's metal. It shares no hex with
+DecaBot, because two demos on one VPS that share a palette read as one demo with two front
+doors.
+
+**Red is the refusal, which inverts COROS's own usage.** `#ea2e41` is what they spend on buy
+buttons — `.buy-btn`, `.button-primary`, `.form-launch-btn`, section headings. Here it never
+sells anything: it is reserved for "COROS Colombia no vende eso" and "no compres nada", the two
+sentences the whole guardrail layer exists to make possible. If red also meant *buy*, the
+honest refusal would arrive in the colour of a purchase. Their `--color-warning: #ff706b` is
+rejected for the same reason — a rate limit is not a refusal, and it is another red; amber
+carries that one. Neither red carries words: white on `#ea2e41` measures 4.23:1, so `DANGER`
+is the icon and the rule and `DANGER_INK` says the sentence.
+
+**Their own success green cannot carry words either.** `#3a8735` on white is 4.47:1, three
+hundredths under AA. Rather than drop COROS's value or ship type nobody can read, `SUCCESS`
+stays the tick and the fill and `SUCCESS_INK` is a darkened sibling for the words.
+
+**Barlow stands in for a licensed face.** COROS self-hosts PF Din Text Pro from their Shopify
+CDN; it is a Parachute commercial face and we cannot ship it, so the interface uses Barlow —
+the same DIN-derived skeleton, on Google Fonts. Fraunces is Brújula's own editorial serif and
+is deliberately *not* COROS's: the wordmark and the headings, nothing else. One verified
+request loads all three with latin-ext, because the whole interface is Spanish and a family
+without the accents renders "Brujula".
+
+**The ratios are enforced, not written down.** `tests/test_brujula_theme.py` recomputes every
+`TOKEN on SURFACE n.nn:1` figure in the token file from the two colours it names, and rejects
+a figure that names no colours — an unverifiable ratio is indistinguishable from an invented
+one. Each colour must also classify itself in `SURFACES`, `TYPE_ON`, `EDGE_ON` or `RULE_ONLY`;
+type clears AA on every surface it is declared on, an edge clears WCAG 1.4.11's non-text
+floor, and anything that can clear neither is `RULE_ONLY` **with the reason** — which is how
+COROS's `--color-sub-text: #9A9A9A` (2.65:1 on our paper) is kept off words for good. A last
+scan rejects a saturated red outside the refusal family, so the decision above cannot be
+undone by a later component reaching for a red button. Eleven mutation probes were run against
+these tests: lightening the muted type, falsifying a stated ratio, adding an unclassified
+colour, turning the accent red, dropping a trace level's colour, lightening the rail until a
+paper token transfers, letting DecaBot's indigo in, and five more, each failing on exactly the
+test that names it.
+
+**The rail is a second register, inverted rather than shared.** The audit rail is Brújula's
+instrument, not COROS's chrome: a warm ink slab, with secondary type tinted from the slab's own
+hue because a neutral grey on warm black reads as dust. None of the paper tokens transfer —
+`BRASS on RAIL_BG 3.10:1` — and a test asserts they still cannot, so the rail cannot quietly
+drift light enough to make `RAIL_*` look redundant.

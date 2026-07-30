@@ -187,6 +187,35 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   the plan came from there — but they are not reachable through the feed, so there is no
   pagination loop to write. A second blog handle `nn` exists with no articles.
 
+### COROS's own brand values — the anchors under both palettes
+
+Read off coros.com.co's **inline theme stylesheet** (CSS custom properties, not hexes
+picked off a screenshot). First taken live 29 Jul 2026; re-read 30 Jul 2026 from the
+Wayback snapshot `20251012171246id_` because the storefront was mid-lockout, and **all
+seven values match across nine months** — the palette is stable, and re-verifying it does
+not need a rested IP.
+
+- `--color-body-text: #161d25` · `--color-primary: #404040` · `--color-primary-darker:
+  #212121` · `--color-sub-text: #9A9A9A` · `--color-border: #EEEEE0` · `--color-success:
+  #3a8735`, on `--color-main-background: #ffffff`. `#EEEEE0` is the storefront's only
+  warmth and is what Brújula's paper register is derived from.
+- **`#ea2e41` is not a custom property.** It is a literal, repeated across their own
+  section styles as a *call to action* — `.buy-btn`, `.button-primary`,
+  `.form-launch-btn`, and section headings. Brújula inverts it to the refusal, which is a
+  deliberate divergence from COROS, not a misreading: see `docs/DECISIONS.md`, 30 Jul.
+- **COROS's own success green cannot carry words on white.** `#3a8735` measures 4.47:1 —
+  three hundredths under AA. It is the tick and the fill; `SUCCESS_INK` says it in words.
+  Their white-on-`#ea2e41` button measures 4.23:1, the same story.
+- **`--color-warning: #ff706b` exists and is deliberately unused.** It is a second red,
+  and a rate limit is not a refusal. Amber keeps the two answers apart.
+- **They self-host PF Din Text Pro** (`PFDinTextPro-Regular.ttf`, `-Bold.ttf`, on their
+  Shopify CDN, aliased `SF-Heading-font`/`SF-Body-font`). It is a licensed Parachute face,
+  so we cannot ship it: Barlow stands in for the interface on the same DIN skeleton, and
+  Fraunces is Brújula's own editorial voice rather than anything of COROS's.
+- The `apps/brujula/brujula/ui/theme.py` docstring holds the same list with its measured
+  ratios; `tests/test_brujula_theme.py` recomputes every figure written in that file from
+  the two colours it names, so a stale ratio fails the build rather than a review.
+
 ### Strava integration (Huella only)
 
 - **OAuth 2.0:** authorize endpoint `https://www.strava.com/oauth/authorize`, token
@@ -480,6 +509,7 @@ rendered only from data; prose carries only reasoning.
 | `apps/brujula/brujula/agent/tools.py` (a tool, a group, `_slim`'s whitelist) | `tests/test_brujula_agent.py` + `brujula/agent/prompts.py`, whose stage prompts describe the tools by name + the guardrail table's four `tools.*` rows. A key added to `_slim` is a change to every prompt that renders one |
 | `apps/brujula/brujula/agent/prompts.py` (a stage, a template) | `tests/test_brujula_agent.py` — one test asserts a canned template exists for every non-advice `Intent`, so a new intent without one is a model call spent letting the model improvise a refusal |
 | `apps/brujula/brujula/state.py` (a var, a caption, the gate) | `tests/test_brujula_state.py`. A caption key must be an event something actually emits or it can never fire; a new `RequirementKey` needs a word in `_REQUIREMENT_ES` and a new declared check needs one in `_CHECK_ES`, or the rail shows an English enum to a Colombian reader; a new handler that spends a model call or reaches COROS needs the `GATE_ON and not self.unlocked` re-check, because conditional rendering is not a guard |
+| `apps/brujula/brujula/ui/theme.py` (a colour, a ratio comment, a registry) | `tests/test_brujula_theme.py` + `docs/VISUAL-BRIEF-BRUJULA.md` + `assets/brujula.css`, which mirrors the tokens as custom properties. A new colour needs a line in `SURFACES`, `TYPE_ON`, `EDGE_ON` or `RULE_ONLY` and its measured ratio in a comment, or the coverage scan fails; a ratio is recomputed from the two colours it names, so editing a colour without editing its comment fails too |
 | `apps/brujula/brujula/agent/loop.py` (a stage, a budget, a wire model) | `tests/test_brujula_agent.py` + the guardrail table's `loop.*` rows. A new stage needs a name in `REOPENED` or it re-runs on every resume; a new `response_schema` needs a place in `loop.SCHEMAS` or nothing checks it for the `additionalProperties` 400; a check the bundle can block on needs a Spanish name in `loop._CHECKS_ES` or the person is told a check failed without being told which |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | `tests/test_brujula_app.py`; recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md`. Every value in that file is load-bearing for a running instance, not a preference |
