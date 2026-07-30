@@ -693,7 +693,12 @@ trace.since(mark))` before it renders, and presents nothing when `accepted` is F
 the blocking reasons are what the person is told instead. `bind_sink()` runs **before**
 `asyncio.create_task()`: contextvars are copied at task-creation time, so the reverse
 order routes the turn's verdicts somewhere the bundle cannot see them, and a bundle that
-sees no events accepts nothing.
+sees no events accepts nothing. **The panel streams that same sink and must never consume
+it**: `State._drain` reads forward from a sequence number and leaves the list alone,
+because `trace.current()` hands back the sink object itself and `evidence.build` reads it
+again after the presentation call. A `sink.clear()` there passed every test and shipped —
+the first bundle accepted, the second saw only the prose scrub, and a recommendation whose
+five checks all passed was withheld with "no pude confirmar" beside it.
 
 **Attribute invention is the likeliest way to be embarrassed live.** The agent will
 not invent *products* — retrieval prevents that. It will invent *properties*: `"waterproof
