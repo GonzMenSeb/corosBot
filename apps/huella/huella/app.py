@@ -51,15 +51,16 @@ from starlette.applications import Starlette
 
 from huella import oauth, privacy
 from huella.state import State
-from huella.ui import advice, brand, connect, trace_panel, training
+from huella.ui import advice, brand, connect, gate, trace_panel, training
 from huella.ui.theme import (
     AMBER_INK,
     APPEARANCE,
     CONTENT_W,
     DASH,
+    EASE,
     EDGE,
-    FLAG_INK,
     FONT,
+    FONT_DISPLAY,
     FONT_HREF,
     GRID,
     INK,
@@ -71,7 +72,6 @@ from huella.ui.theme import (
     RADIX_RADIUS,
     RADIX_SCALING,
     READOUT,
-    SHADOW_MD,
     SUB,
     TRACE,
     TRACE_DEEP,
@@ -99,10 +99,17 @@ HEADER_H = "4.5rem"
 # trigger the sweep.
 SWEEP_INTERVAL_SECONDS = 300
 
-EXAMPLES = (
-    "¿Qué reloj me sirve para lo que estoy entrenando?",
-    "Necesito una correa nueva para mi APEX 4",
-    "Corro trail dos veces por semana, ¿me falta algo?",
+# (icon, label, the sentence actually sent).
+EXAMPLES: tuple[tuple[str, str, str], ...] = (
+    ("watch", "Elegir reloj", "¿Qué reloj me sirve para lo que estoy entrenando?"),
+    ("link", "Correa de repuesto", "Necesito una correa nueva para mi APEX 4"),
+    ("footprints", "Revisar lo que falta", "Corro trail dos veces por semana, ¿me falta algo?"),
+)
+
+_OPENING_BLURB = (
+    "Cuéntame qué entrenas y con qué, o conecta Strava y lo leo. Derivo lo que necesitas de "
+    "lo que ya hiciste, lo verifico contra el catálogo real de COROS Colombia y te digo "
+    "cuánta confianza merece cada respuesta."
 )
 
 
@@ -114,39 +121,73 @@ api = Starlette(routes=list(oauth.ROUTES))
 # ── the instrument ────────────────────────────────────────────────────────────
 
 
+def _example(icon: str, label: str, prompt: str) -> rx.Component:
+    return rx.button(
+        rx.icon(icon, size=17, color=TRACE, flex_shrink="0"),
+        rx.vstack(
+            rx.text(label, color=READOUT, size="2", weight="bold"),
+            rx.text(prompt, color=SUB, size="1", line_height="1.5", text_align="left"),
+            spacing="1",
+            align="start",
+        ),
+        on_click=State.send_example(prompt),
+        disabled=State.is_thinking,
+        # A button, not a clickable box: Enter and Space have to work.
+        cursor="pointer",
+        width="100%",
+        height="auto",
+        justify_content="start",
+        align_items="start",
+        gap="0.7rem",
+        padding="0.8rem 0.9rem",
+        white_space="normal",
+        text_align="left",
+        background=INK,
+        border=f"1px solid {GRID}",
+        border_radius=RADIUS,
+        transition=f"background 180ms {EASE}, border-color 180ms {EASE}",
+        # On the instrument elevation is a lighter surface, not a shadow — and all three of
+        # these inks are declared on INK_2 as well as on INK, so the swap costs nothing.
+        _hover={"background": INK_2, "border_color": TRACE},
+    )
+
+
+def _opening() -> rx.Component:
+    """The `h2` is deliberate: `_header()` owns the document's only `h1` for the whole
+    session, and this heading unmounts the moment the first message lands.
+
+    There is no display family to reach for — theme.py is explicit that a serif over a
+    table of splits is a magazine pretending to be a dashboard — so the size, the weight
+    and the tracking are what make this a headline.
+    """
+    return rx.vstack(
+        rx.heading(
+            "¿Qué te falta para lo que ya entrenas?",
+            as_="h2",
+            color=READOUT,
+            font_family=FONT_DISPLAY,
+            font_size=["1.75rem", "2.05rem", "2.35rem"],
+            font_weight="700",
+            letter_spacing=TRACK_DISPLAY,
+            line_height="1.08",
+        ),
+        rx.text(_OPENING_BLURB, color=SUB, size="3", line_height="1.7", max_width="44rem"),
+        rx.vstack(
+            *(_example(icon, label, prompt) for icon, label, prompt in EXAMPLES),
+            spacing="2",
+            width="100%",
+            max_width="34rem",
+        ),
+        spacing="4",
+        align="start",
+        width="100%",
+        padding_top="0.5rem",
+    )
+
+
 def _transcript() -> rx.Component:
     return rx.vstack(
-        rx.cond(
-            State.messages.length() == 0,
-            rx.vstack(
-                rx.heading(
-                    "Cuéntame qué entrenas — o conecta Strava y lo leo.",
-                    as_="h2",
-                    size="5",
-                    color=READOUT,
-                    letter_spacing=TRACK_DISPLAY,
-                ),
-                rx.hstack(
-                    rx.foreach(
-                        list(EXAMPLES),
-                        lambda text: rx.button(
-                            text,
-                            on_click=lambda: State.send_example(text),
-                            size="2",
-                            cursor="pointer",
-                            color=TRACE,
-                            background=INK,
-                            border=f"1px solid {GRID}",
-                        ),
-                    ),
-                    spacing="2",
-                    wrap="wrap",
-                ),
-                spacing="3",
-                align="start",
-                width="100%",
-            ),
-        ),
+        rx.cond(State.messages.length() == 0, _opening()),
         rx.foreach(
             State.messages,
             lambda message: rx.box(
@@ -181,35 +222,61 @@ def _transcript() -> rx.Component:
 
 
 def _composer() -> rx.Component:
-    return rx.form(
-        rx.hstack(
-            rx.input(
-                name="message",
-                placeholder="Cuéntame qué entrenas…",
-                aria_label="Tu mensaje",
-                size="3",
-                flex="1",
-                background=INK,
-                color=READOUT,
-                border=f"1px solid {EDGE}",
+    """`hu-dock` is what the stylesheet already wrote for this surface: it strips Radix's
+    own field ring and background so the dock draws the field, and it owns the focus ring.
+
+    The ring is deliberately NOT also a `_focus_within` prop — a style prop compiles to a
+    class of the same specificity as `.hu-dock:focus-within` and the two would race, which
+    is the trap `assets/huella.css` names for itself. Only the border moves here.
+    """
+    return rx.box(
+        rx.form(
+            rx.hstack(
+                rx.input(
+                    name="message",
+                    placeholder="Cuéntame qué entrenas…",
+                    # A placeholder is not a label: it disappears the moment you type, and a
+                    # screen reader announces the field as unnamed.
+                    aria_label="Cuéntame qué entrenas",
+                    size="3",
+                    width="100%",
+                    disabled=State.is_thinking,
+                    color=READOUT,
+                    font_size="0.95rem",
+                    background="transparent",
+                    box_shadow="none",
+                ),
+                rx.button(
+                    rx.icon("send-horizontal", size=17),
+                    # The word hides below md, which would leave an unnamed icon button on
+                    # exactly the viewport a phone uses.
+                    rx.text("Enviar", size="2", weight="bold", display=["none", "none", "block"]),
+                    type="submit",
+                    aria_label="Enviar",
+                    size="3",
+                    cursor="pointer",
+                    flex_shrink="0",
+                    disabled=State.is_thinking,
+                    color=INK,
+                    background=TRACE,
+                    _hover={"background": TRACE_DEEP},
+                ),
+                width="100%",
+                spacing="2",
+                align="center",
             ),
-            rx.button(
-                rx.icon("send", size=16),
-                type="submit",
-                aria_label="Enviar",
-                size="3",
-                cursor="pointer",
-                disabled=State.is_thinking,
-                color=INK,
-                background=TRACE,
-            ),
+            on_submit=State.send_message,
+            reset_on_submit=True,
             width="100%",
-            spacing="2",
-            align="center",
         ),
-        on_submit=State.send_message,
-        reset_on_submit=True,
+        class_name="hu-dock",
         width="100%",
+        padding="0.4rem 0.4rem 0.4rem 0.55rem",
+        background=INK,
+        border=f"1px solid {EDGE}",
+        border_radius=RADIUS_LG,
+        transition=f"border-color 180ms {EASE}",
+        _focus_within={"border_color": TRACE},
     )
 
 
@@ -269,20 +336,13 @@ def _header() -> rx.Component:
 
 def _skip_link() -> rx.Component:
     """First tab stop. Without it a keyboard user walks the header and, once a kit is up,
-    every card link before reaching the composer."""
-    return rx.link(
-        "Ir a la conversación",
-        href=f"#{MAIN_ID}",
-        color=READOUT,
-        position="absolute",
-        left="-9999px",
-        top="0",
-        padding="0.5rem 0.75rem",
-        background=INK,
-        border=f"1px solid {TRACE}",
-        border_radius=RADIUS,
-        _focus={"left": "0.75rem", "top": "0.75rem", "z_index": "50"},
-    )
+    every card link before reaching the composer.
+
+    Every position, surface and edge is `.hu-skip`'s. The props this used to carry said the
+    same thing in a second place — and off-screen by `left: -9999px` rather than the
+    stylesheet's `top`, so a focus that moved one moved neither.
+    """
+    return rx.link("Ir a la conversación", href=f"#{MAIN_ID}", class_name="hu-skip")
 
 
 def _column() -> rx.Component:
@@ -350,77 +410,9 @@ def _shell() -> rx.Component:
 
 
 def _gate() -> rx.Component:
-    return rx.center(
-        rx.vstack(
-            rx.hstack(
-                brand.mark(size="2.6rem", surface=INK),
-                rx.vstack(
-                    brand.wordmark(size="1.8rem", as_="h1"),
-                    brand.tagline(),
-                    spacing="1",
-                    align="start",
-                ),
-                spacing="3",
-                align="center",
-                width="100%",
-            ),
-            rx.form(
-                rx.hstack(
-                    rx.input(
-                        name="password",
-                        type=rx.cond(State.gate_reveal, "text", "password"),
-                        placeholder="Contraseña",
-                        aria_label="Contraseña",
-                        size="3",
-                        flex="1",
-                        background=INK,
-                        color=READOUT,
-                        border=f"1px solid {EDGE}",
-                    ),
-                    rx.button(
-                        rx.icon("eye", size=16),
-                        type="button",
-                        on_click=State.toggle_reveal,
-                        aria_label="Mostrar u ocultar la contraseña",
-                        size="3",
-                        cursor="pointer",
-                        color=SUB,
-                        background=INK_2,
-                    ),
-                    rx.button(
-                        "Entrar",
-                        type="submit",
-                        size="3",
-                        cursor="pointer",
-                        disabled=State.gate_busy,
-                        color=INK,
-                        background=TRACE,
-                    ),
-                    width="100%",
-                    spacing="2",
-                    align="center",
-                ),
-                on_submit=State.unlock,
-                width="100%",
-            ),
-            rx.cond(
-                State.gate_error != "",
-                rx.text(State.gate_error, size="2", color=FLAG_INK, role="alert"),
-            ),
-            spacing="3",
-            align="start",
-            width="100%",
-            max_width="26rem",
-            padding="1.6rem",
-            background=INK,
-            border=f"1px solid {GRID}",
-            border_radius=RADIUS_LG,
-            box_shadow=SHADOW_MD,
-        ),
-        width="100%",
-        min_height="100vh",
-        background=DASH,
-    )
+    """The door itself is `huella/ui/gate.py`. This stays because the page branches on it
+    and both `tests/test_huella_ui.py` branches walk it by this name."""
+    return gate.screen()
 
 
 def index() -> rx.Component:

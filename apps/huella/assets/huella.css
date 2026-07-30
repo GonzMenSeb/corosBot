@@ -208,8 +208,11 @@ body {
   outline-offset: -2px;
 }
 
-/* The composer draws the field, so Radix must not draw a second one inside it: its inset
-   ring reads as a double border and its background hides the dock's own surface. */
+/* A dock draws its own field, so Radix must not draw a second one inside it: its inset ring
+   reads as a double border and its background hides the dock's own surface. Two surfaces
+   carry this — `app._composer()` and the gate's password well — and both need it from here
+   rather than from a style prop, because Reflex puts props on the TextField Root while the
+   ring and the outline below are on the `<input>` within it. */
 .hu-dock .rt-TextFieldRoot,
 .hu-dock .rt-TextFieldRoot:focus-within {
   box-shadow: none !important;
