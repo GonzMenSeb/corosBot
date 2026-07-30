@@ -233,11 +233,34 @@ class TestRollbackHasATargetToRollBackTo:
         )
 
     def test_the_deploy_reads_that_label_to_compute_prev_sha(self) -> None:
+        """Pins the ASSIGNMENT, not the name.
+
+        The first version of this asserted `"env.PREV_SHA" in body and LABEL in body`, and
+        it survived the realistic regression: renaming only `env.PREV_SHA = sh(` to
+        `env.PREVIOUS = sh(` leaves the variable never computed and the rollback silently
+        dead, while the substring lives on in the untouched `echo "Currently live: ..."`
+        two lines below. Mutation-probed 30 Jul 2026 — 32 passed with rollback disabled.
+        A test that a nearby echo can satisfy is pinning the echo.
+        """
         body = jenkins_stages()["Deploy"]
-        assert "env.PREV_SHA" in body and self.LABEL in body, (
-            f"The Deploy stage no longer derives PREV_SHA from {self.LABEL}.\n"
+        assign = re.search(r"env\.PREV_SHA\s*=\s*sh\(", body)
+        assert assign, (
+            "Nothing in the Deploy stage ASSIGNS env.PREV_SHA from an sh() call.\n"
             "Reading it off the running image before the pull is what makes the rollback\n"
-            "target the revision that was actually live, rather than a guess."
+            "target the revision that was actually live, rather than a guess. Mentioning\n"
+            "the name in an echo is not computing it."
+        )
+        # The label has to be read by THAT call, not merely somewhere in the stage.
+        call = body[assign.start() : body.index(".trim()", assign.start())]
+        assert self.LABEL in call, (
+            f"env.PREV_SHA is assigned, but its sh() does not read {self.LABEL}.\n"
+            "The rollback target has to come off the running image's own label; any other\n"
+            "source is a guess about what was live."
+        )
+        assert "$IMAGE:latest" in call, (
+            "PREV_SHA is not read off :latest. It has to inspect the tag that is actually\n"
+            "serving — inspecting :$GIT_SHA would report the revision being deployed, so\n"
+            "every rollback would target the build that just failed."
         )
 
     def test_every_build_pushes_the_sha_tag_beside_latest(self) -> None:
