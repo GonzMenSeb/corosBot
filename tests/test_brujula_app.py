@@ -129,6 +129,52 @@ class TestRxconfigCarriesTheFactsThatCostADemo:
             "page renders perfectly and does nothing at all."
         )
 
+    def test_the_default_credentialed_cors_wildcard_is_not_shipped(self) -> None:
+        """Reflex defaults `cors_allowed_origins` to `("*",)` and `App._add_cors` pairs it with
+        `allow_credentials=True`, so an unset value means any site can make credentialed calls
+        to this backend and read the answers — measured under granian 30 Jul 2026."""
+        allowed = list(config("brujula").cors_allowed_origins)
+        assert "*" not in allowed and allowed, (
+            f"cors_allowed_origins is {allowed!r}.\n"
+            "A wildcard here is Reflex's default, not a decision, and _add_cors sends it with\n"
+            "allow_credentials=True. See AGENTS.md, 'The OAuth callback route'."
+        )
+
+    def test_the_dev_origin_is_allowed_when_nothing_is_configured(self) -> None:
+        """The list also gates the socket.io handshake (`reflex/app.py:540`), so dropping the
+        dev origin does not fail loudly — it renders the page and never connects."""
+        assert config("brujula").cors_allowed_origins == ["http://localhost:3000"], (
+            "the default allowed origin is no longer the dev frontend on :3000.\n"
+            "rxconfig pins frontend_port=3000, and the browser loads the page from there while\n"
+            "the backend answers on :8000 — a cross origin. Narrowing this without it means a\n"
+            "local dev run renders perfectly and does nothing at all."
+        )
+
+    def test_the_hosted_origin_replaces_the_dev_one_rather_than_joining_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`roles/brujula/templates/env.j2` templates the public origin into this var. A
+        production instance that still trusted localhost would be trusting any process on the
+        box, which on this VPS means every other container."""
+        monkeypatch.setenv("BRUJULA_ALLOWED_ORIGINS", "https://brujula.web.vespiridion.org")
+        assert config("brujula").cors_allowed_origins == ["https://brujula.web.vespiridion.org"], (
+            "BRUJULA_ALLOWED_ORIGINS no longer replaces the default. If it appends instead,\n"
+            "the hosted app trusts http://localhost:3000 as well."
+        )
+
+    def test_a_comma_separated_list_is_accepted_and_trimmed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BRUJULA_ALLOWED_ORIGINS", "https://a.example , https://b.example ,")
+        assert config("brujula").cors_allowed_origins == [
+            "https://a.example",
+            "https://b.example",
+        ], (
+            "the origin list no longer splits on commas and trims. Reflex's own field carries\n"
+            "SequenceOptions(delimiter=','), so a reader will expect that shape; an untrimmed\n"
+            "' https://b.example' silently matches no origin at all."
+        )
+
     def test_rxconfig_needs_nothing_on_sys_path_but_its_own_directory(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         done = subprocess.run(

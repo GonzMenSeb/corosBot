@@ -502,6 +502,20 @@ below is a fact about `App.__call__` and nothing warns you when it changes.
   Strava's own redirect is unaffected either way: a top-level navigation carries no `Origin`, so
   CORS never applies to the request that matters. Pinned by
   `tests/test_contracts.py::TestReflexPutsItsOwnCorsPolicyOnOurRoute`.
+- **The same list gates the `/_event` websocket, and that is the bigger half.**
+  `reflex/app.py:540` feeds `cors_allowed_origins` to the socket.io `AsyncServer` as well as to
+  the HTTP middleware, and `engineio/async_server.py:227` checks `HTTP_ORIGIN` **only when one
+  is present**. Measured under granian 30 Jul 2026 with `cors_allowed_origins=["http://localhost:3000"]`:
+  no `Origin` → `101`, `Origin: http://localhost:3000` → `101`, `Origin: https://evil.example`
+  → **`403 Forbidden`**. Three consequences, all load-bearing. The deploy health-check's curl
+  probe and Strava's redirect send no `Origin`, so neither is affected. A foreign page cannot
+  open the event channel at all, which is a stronger result than the CORS mirror — that channel
+  is how every handler is invoked. And **the origin the browser loads the page from must be on
+  the list**: drop `http://localhost:3000` and a local dev run renders perfectly and never
+  connects, which is the same silent symptom `rxconfig.py` already warns about for `api_url`.
+  The default therefore *is* the dev origin, and `BRUJULA_ALLOWED_ORIGINS` /
+  `HUELLA_ALLOWED_ORIGINS` **replace** it rather than adding to it — a hosted instance that
+  still trusted localhost would trust every other container on the VPS.
 - **The callback still must not answer with a body worth stealing.** CORS is a browser policy,
   not a server one, and the narrowing above is defence in depth rather than the guarantee. The
   callback exchanges the code server-side and answers with a redirect and an empty body, so
