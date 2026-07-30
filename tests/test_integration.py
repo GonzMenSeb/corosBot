@@ -209,3 +209,65 @@ class TestTheOAuthCallbackStillOutranksTheFrontendMount:
             "STRAVA_REDIRECT_URI the Ansible role templates, and Strava validates the\n"
             "registered domain against it."
         )
+
+
+# ── the token seam: a CSS var is a colour the token walkers cannot see ────────
+
+
+class TestNoRenderedColourArrivesAsACssVariable:
+    """`brand._dot(ink, …)` took a colour parameter, three callers passed three DIFFERENT
+    colours — degraded, thinking, idle — and the body hardcoded
+    `background="var(--huella-flag-ink)"`, so all three presence states rendered in the flag
+    red. Both a broken indicator and a red-rule violation: the uncertainty colour spent on
+    "thinking" and on the ordinary day.
+
+    It survived the rendered-pair walk because a `var(...)` string is not a theme token, so
+    the walker saw no colour there at all — the check that was supposed to catch it could
+    not see it. A `var()` in a Python style prop also silently decouples from `theme.py`:
+    `--huella-strava` in `huella.css` still held `#FC4C02` months after `theme.STRAVA` was
+    corrected to `#FC5200`, and nothing compared them.
+    """
+
+    UI_MODULES = ("brand", "connect", "training", "advice", "trace_panel")
+
+    @pytest.mark.parametrize("module", UI_MODULES)
+    def test_no_ui_module_paints_with_a_css_variable(self, module: str) -> None:
+        path = REPO / "apps" / "huella" / "huella" / "ui" / f"{module}.py"
+        tree = ast.parse(path.read_text())
+        found = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "var(--" in node.value
+        ]
+        assert not found, (
+            f"{module}.py paints with {found}. A var() is invisible to every check in this\n"
+            "repo that reasons about colour: the rendered-pair walk sees no token, the\n"
+            "zero-literals scan sees no hex, and the value itself lives in a stylesheet\n"
+            "nothing recomputes against theme.py. Import the token instead."
+        )
+
+    def test_the_stylesheet_mirrors_the_theme_exactly(self) -> None:
+        """The mismatch that hid for a session: theme.py said #FC5200 and the CSS said
+        #FC4C02, and no test compared them."""
+        from huella.ui import theme
+
+        css = (REPO / "apps" / "huella" / "assets" / "huella.css").read_text()
+        mirrored = dict(re.findall(r"--huella-([a-z0-9-]+):\s*(#[0-9A-Fa-f]{6})\s*;", css))
+        tokens = {
+            name.lower().replace("_", "-"): value
+            for name, value in vars(theme).items()
+            if isinstance(value, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", value)
+        }
+        drifted = {
+            name: (declared, tokens[name])
+            for name, declared in mirrored.items()
+            if name in tokens and declared.upper() != tokens[name].upper()
+        }
+        assert not drifted, (
+            f"huella.css mirrors these tokens at a different value than theme.py holds:\n  "
+            + "\n  ".join(f"--huella-{n}: {css_v} but theme has {tok_v}" for n, (css_v, tok_v) in drifted.items())
+            + "\nThe stylesheet is a mirror, and a mirror nothing recomputes is a second\n"
+            "source of truth. theme.py is the one that measured its ratios."
+        )

@@ -174,7 +174,7 @@ def _dot(ink: str, pulse: bool, surface: str) -> rx.Component:
         height="18%",
         box_sizing="content-box",
         border_radius=RADIUS_PILL,
-        background="var(--huella-flag-ink)",
+        background=ink,
         border=f"2px solid {surface}",
         class_name=PULSE_CLASS if pulse else "",
     )

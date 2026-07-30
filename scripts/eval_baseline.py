@@ -407,24 +407,7 @@ def run_agent(
     bundle = evidence.build(decision.advice, trace.since(mark))
 
     if not bundle.accepted:
-        missing = [
-            loop._CHECKS_ES[c.name]
-            for c in bundle.checks
-            if c.outcome != "pass" and c.name in loop._CHECKS_ES
-        ]
-        reason = (
-            f"Me faltó comprobar {', '.join(missing)}."
-            if missing
-            else "No pude comprobar lo que encontré."
-        )
-        return Rendered(
-            arm="agent",
-            kind="insufficient_evidence",
-            unavailable_devices=decision.advice.unavailable_devices,
-            text=prompts.UNVERIFIED_TEMPLATE.format(reason=reason),
-            accepted=False,
-            blocking=bundle.blocking,
-        )
+        return _from_turn(loop._blocked(decision, bundle, loop.TurnResult()))
 
     advice = decision.advice
     if advice.kind == "recommend":
