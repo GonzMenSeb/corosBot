@@ -151,8 +151,16 @@ Parallelise with subagents — it worked well and the seams that matter are know
   they cover; the privacy and verifier ones are described well enough above to rebuild.
 - `curl-cffi==0.15.0` is pinned **exactly** on purpose: `"chrome"` is an alias for curl_cffi's
   newest bundled profile, so an upgrade silently moves the fingerprint target.
-- No containers or stray processes should be running. A hung Reflex dev server (2h45m, blocked on
-  a futex, accepting TCP and answering nothing on `:8000`) was killed during this session — if
-  `:8000` is busy and the app is unresponsive, suspect that again.
+- **Nothing is running.** Verified at handoff: no containers, no images, no `granian` / `reflex` /
+  `react-router` processes, and `:3000` / `:3001` / `:8000` / `:8001` all free.
+- Three orphaned processes were cleaned up on the way out, and two of them are worth knowing about:
+  - A Reflex **dev server hung on a futex** for 2h45m — accepting TCP on `:8000` and answering
+    nothing on any path, while its frontend on `:3000` served pages normally. If `:8000` is busy
+    and the app is unresponsive, suspect this shape again.
+  - Two `granian` workers from `scripts/spike_api_transformer.py`, still serving from temp
+    directories that had already been deleted. The script does terminate them in a `finally` —
+    these survived because **I killed their parent shell**, with a `pkill -f "reflex.*brujula"`
+    that matched my own command line. If you run the spike in a background shell, check for
+    `spike.app:app` afterwards; and never `pkill -f` on a pattern your own invocation contains.
 - `.claude-task-master/state.json` still says `status: "failed"` from the session that died on
   Task 26. It was not updated; `progress.md` is the accurate record.
