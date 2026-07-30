@@ -97,6 +97,40 @@ curl -u admin:<password> -X POST https://jenkins.web.vespiridion.org/reload
 Existing jobs update in place and are unaffected. This is recorded in `casc.yml.j2` around
 L80-85 and was observed on `decabot-deploy` on 29 Jul 2026.
 
+**e. Add the GitHub webhook, or nothing is ever deployed automatically.** Both jobs declare
+`triggers { githubPush() }`, which is *not* a poll: it fires only when GitHub POSTs to
+Jenkins. The job side is complete and the repo side is a separate switch nobody owns, so a
+green merge to `main` sits there and the VPS keeps serving the previous image, with no
+failure anywhere to notice — not in Actions, not in the PR, not in Jenkins, which was never
+told there was anything to build.
+
+That is exactly what happened: measured 30 Jul 2026, `corosBot` had **zero** webhooks and the
+running images were four merges behind `main` (revision label `e77b3f2`, i.e. #7, while main
+was at #11). `GonzMenSeb/vps-infrastructure` had the working hook all along, which is why its
+deploys were never in doubt.
+
+```bash
+gh api repos/GonzMenSeb/corosBot/hooks -X POST \
+  -f name=web -F active=true -f 'events[]=push' \
+  -f 'config[url]=https://jenkins.web.vespiridion.org/github-webhook/' \
+  -f 'config[content_type]=json'
+```
+
+No secret: `casc.yml.j2` configures no `githubPluginConfig` shared secret, so a hook that sets
+one is rejected. Verify it rather than trusting the 201 — a hook that cannot reach Jenkins
+looks identical to one that can until a merge does nothing:
+
+```bash
+gh api repos/GonzMenSeb/corosBot/hooks/<id>/pings -X POST
+gh api repos/GonzMenSeb/corosBot/hooks/<id>/deliveries --jq '.[0] | {event, status, status_code}'
+# expect: {"event":"ping","status":"OK","status_code":200}
+```
+
+**The deploy is still path-gated after the hook exists.** The Jenkinsfile's image filter is
+`^(apps/<app>/|packages/coros_core/|requirements.txt$|.dockerignore$)`, so a docs-only merge
+correctly runs the job and correctly declines to ship. A job that fires and does not deploy is
+not the same symptom as a job that never fires, and only the second one is this bug.
+
 ---
 
 ## 2. Order of operations
