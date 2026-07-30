@@ -28,6 +28,7 @@ from google.genai import types
 from brujula.agent import loop, prompts, tools
 from coros_core import catalog, devices, guardrails, trace
 from coros_core.capability import SURFACES, WITHHELD, ToolId
+from coros_core.gemini import GeminiUnconfigured
 from coros_core.models import CatalogProduct
 from coros_core.outcomes import ToolOutcome, ToolResult
 
@@ -751,6 +752,32 @@ class TestTheBudgetsAreTheOnesTheDesignStates:
         session = loop.ConversationSession()
         await loop.run_turn("un reloj para trail", session)
         assert session.model_calls == 7
+
+
+class TestAnUnconfiguredModelFailsTheTurnNotTheProcess:
+    """`gemini.client()` raises `GeminiUnconfigured` before any request leaves when no
+    key is set. It carries no `.code`, so `_model_quota` reads it as an ordinary
+    failure — the same branch a genuine crash takes, never a special case that could
+    itself be missed. This is the one failure a live run can force deterministically,
+    which is why `scripts/verify_brujula.py` drives this exact path with the real key
+    popped from the environment rather than a scripted double."""
+
+    async def test_a_missing_api_key_ends_the_turn_with_the_broke_template(
+        self, feed: Any, model: Any
+    ) -> None:
+        model(GeminiUnconfigured("GEMINI_API_KEY is missing — put it in .env"))
+        result = await loop.run_turn("un reloj para trail", loop.ConversationSession())
+        assert result.stage == "error"
+        assert result.text == prompts.BROKE_TEMPLATE
+        assert "GEMINI_API_KEY" not in result.text
+
+    async def test_no_stage_is_left_looking_like_it_completed(
+        self, feed: Any, model: Any
+    ) -> None:
+        model(GeminiUnconfigured("GEMINI_API_KEY is missing"))
+        session = loop.ConversationSession()
+        await loop.run_turn("un reloj para trail", session)
+        assert not session.done, "the gate call never returned, so no stage completed"
 
 
 class TestTheToolLoopCannotDesyncTheConversation:
