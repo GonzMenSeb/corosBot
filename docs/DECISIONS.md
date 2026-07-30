@@ -412,3 +412,53 @@ read a spec out of prose when the specs that matter — strap widths, compatibil
 registry with the sentence they were read from. And `lookup_device_compat` answers an APEX 4 with
 no case size by returning the *question* as `NOT_ELIGIBLE`, because an empty strap list there
 would read as "COROS sells no APEX 4 straps", which is false, and picking a case is a guess.
+
+### 2026-07-30 · A turn ends when the evidence bundle accepts, not when the model stops
+
+`loop.py` builds the bundle **before** the presentation call and presents nothing when
+`accepted` is False. That ordering is the decision: a recommendation whose required checks left
+no trace event behind never gets prose written for it, the person is told which check is missing
+instead, and no stage is marked done — so the next turn resumes rather than the case being
+closed with an answer nothing verified. The bundle is rebuilt after the scrub so its `prose` row
+reflects a check that had not run yet at gate time. KB §3.4.4: stopping after N iterations "is
+the most prevalent convergence pattern in the literature and represents the most significant gap
+in the field".
+
+Resumption is keyed on **completion, not emptiness**. `session.done` is a set of stage names, so
+an interview that asked nothing is not an interview that never ran; DecaBot's `if not
+session.slots` would re-ask on every turn. A message that arrives after a *finished*
+recommendation reopens `REOPENED` — the person is changing something, and answering from
+requirements they have replaced is worse than spending the calls again.
+
+Only a recommendation costs a presentation call. "Buy nothing", "COROS Colombia does not sell
+that", "I could not read the catalogue" and the capability dead ends are rendered from typed
+verdicts through `prompts.py`. Those are the four sentences a person is most likely to be lied
+to about, and generated prose is prose that can drift; the templates cannot.
+
+Two consequences worth stating. The buy-nothing verdict is checked **before** the item list, so
+a selection nothing can afford is reported as a buy-nothing rather than presented and then
+blocked — the honest answer and the verified one are the same answer. And the tool surface for
+retrieval is read off `capability.MAP` at call time instead of being hardcoded to
+`tools.DECLARATIONS`: an empty map raises a typed dead end, because a retrieval stage handed no
+tools answers from the model's memory.
+
+Two divergences from DecaBot's loop. It imports `catalog` directly rather than matching
+exception class names — there is one upstream here, the read happens in the loop, and no
+model-facing tool can reach another. And there is no `_repair` ladder for structured stages:
+provenance is enforced downstream by `check_provenance`, so a stage this loop cannot read fails
+the turn instead of being retried into something plausible.
+
+### 2026-07-30 · Response schemas are plain wire models, because `extra="forbid"` 400s
+
+Verified live against `google-genai` 2.14.0: handing Gemini a `response_schema` built from a
+model with `extra="forbid"` renders `additionalProperties` into the schema and the API answers
+`400 INVALID_ARGUMENT · Unknown name "additional_properties"`. `coros_core.models` sets
+`extra="forbid"` on every policy model on purpose — a model inventing
+`max_total_minor_override` must be rejected, not ignored — so none of them can cross the wire.
+
+`loop.SCHEMAS` is therefore four plain models, and each is validated into the frozen core model
+in code. That is not a workaround: the validation step is where a requirement key outside the
+allowlist, a `Provenance` label the model made up, and a derived value with no sample size are
+dropped with a trace event. A schema that had gone over the wire intact would have had to reject
+those on the model's side, which is the one place we do not control. A `str | int | bool` union
+renders as `anyOf` and is accepted; `budget_minor` came back an int on the same probe.

@@ -201,6 +201,14 @@ def _slim_all(products: Sequence[CatalogProduct]) -> list[dict[str, Any]]:
     return [_slim(p) for p in products]
 
 
+def as_candidates(products: Sequence[CatalogProduct]) -> list[dict[str, Any]]:
+    """The selection stage sees exactly what the retrieval tools handed back — same
+    whitelist, one place. A second shape there is a second thing to keep in step with
+    `_slim`, and the divergence would show up as a field the model can cite and nothing
+    can verify."""
+    return _slim_all(products)
+
+
 def as_response(result: ToolResult) -> dict[str, Any]:
     """The function-response part the loop hands back to the model.
 

@@ -326,6 +326,46 @@ preguntarme en un momento y lo consulto de nuevo. Prefiero decirte esto que \
 inventarte un inventario."""
 
 
+# The general case of the one above: the consulta did not finish, and why is a detail
+# for the audit rail. Says the same thing a 429 says without claiming a 429 happened.
+UNREACHABLE_TEMPLATE = """No terminé de consultar el catálogo, así que no tengo con \
+qué responderte todavía.
+
+Eso NO significa que no haya nada: significa que no lo alcancé a mirar. Vuelve a \
+preguntarme y lo consulto otra vez. Lo que ya me contaste no se pierde."""
+
+
+# The evidence bundle refused. The recommendation existed and the verification did not,
+# and which of the two the person hears about is the whole point — KB §3.4.4.
+UNVERIFIED_TEMPLATE = """Armé una recomendación y no la pude verificar, así que no te \
+la voy a mostrar.
+
+{reason}
+
+No es que no haya nada: es que no puedo responder por lo que encontré. Vuelve a \
+preguntarme y lo reviso otra vez desde donde quedé."""
+
+
+LIMIT_TEMPLATE = """Llegué a mi límite de consultas para esta conversación y prefiero \
+parar aquí antes que dar vueltas.
+
+Empieza una conversación nueva contándome otra vez qué entrenas y la retomo desde \
+ahí."""
+
+
+QUOTA_TEMPLATE = """Se me acabó la cuota del modelo por ahora, así que este turno no \
+pude ni buscar ni elegir nada.
+
+Prefiero decírtelo a mostrarte una recomendación que no armé. Lo que ya me contaste \
+sigue guardado: vuelve a intentarlo en un rato."""
+
+
+BROKE_TEMPLATE = """Algo se rompió mientras armaba eso.
+
+Cuéntame otra vez qué entrenas, o cámbiale un detalle, y lo intento de nuevo desde \
+donde quedé."""
+
+
 BUY_NOTHING_TEMPLATE = """Mirando el catálogo completo, lo honesto es que no compres \
 nada todavía.
 

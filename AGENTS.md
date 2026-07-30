@@ -229,6 +229,20 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   request hangs the turn forever, which from the outside is a crash.
 - **`generate_content` takes `model`, `contents`, `config` and nothing else** — there is no
   `previous_interaction_id`. History is threaded client-side as `list[types.Content]`.
+- **A `response_schema` may not be a model with `extra="forbid"`.** Pydantic renders it as
+  `additionalProperties: false`, the SDK passes it through, and the API answers
+  `400 INVALID_ARGUMENT · Unknown name "additional_properties" at
+  'generation_config.response_schema.properties[0].value.items'`. Every policy model in
+  `models.py` sets `extra="forbid"` deliberately, so **none of them can be a response
+  schema**: `loop.py` carries plain wire models (`loop.SCHEMAS`) and validates them into
+  the frozen ones in code, which is where a key outside the allowlist is dropped anyway.
+  A `str | int | bool` union renders as `anyOf` and *is* accepted — `budget_minor` came
+  back as an int on the same probe. Pinned in `tests/test_brujula_agent.py`.
+- **Every `function_call` in one model turn needs a matching response part in ONE
+  `Content`.** Split across two, or one left unanswered, and the *next* request 400s —
+  which surfaces a turn later, at a stage that looks unrelated. `loop._retrieve` answers
+  even the calls it refuses for budget, and answers them with `TIMEOUT`: "we stopped" is a
+  different sentence from "there is nothing".
 - **429 is ordinary here, not exotic.** One per-project quota is shared by Brújula, Huella
   and DecaBot (`vault_decabot_gemini_api_key`, by decision — there is no key pool and no
   `bind_key()`, unlike DecaBot, which rotates one for a QR-code audience). `gemini-3.6-flash`
@@ -365,6 +379,13 @@ live feed; an unbacked `"$X COP"` claim is rejected.
 | `tools.lookup_device_compat` | `guardrail.case_unspecified` | an APEX 4 with no case size gets the **question** back as `NOT_ELIGIBLE`. An empty strap list would read as "COROS sells no APEX 4 straps", and picking a case is a guess |
 | `tools.get_collection_products` | `guardrail.handle_rejected` | an unvalidated group handle is never looked up. The rejection is a tool *answer* carrying the three live names, so the model retries instead of the turn raising. Records the handle's length, never the handle |
 | `tools.get_collection_products` | `guardrail.empty_collection` | a group that is live and carries nothing is `UNAVAILABLE` with a reason, not an empty `OK`. `Snapshot` refuses to be built `OK`-with-no-products at all, so a 429 cannot arrive here disguised as an empty catalogue |
+| `loop._advise` | `guardrail.evidence_blocked` | a recommendation the bundle refused is never presented, and no stage is marked done — so the next turn resumes instead of the person getting an answer nothing verified |
+| `loop._model` | `guardrail.model_budget` | the 26th model call of a conversation raises instead of running. The budget is per conversation, not per turn |
+| `loop._retrieve` | `guardrail.tool_budget` | the 7th tool call of a turn is answered with `TIMEOUT` rather than dropped. A dropped call leaves a `function_call` unanswered, which 400s the next request |
+| `loop._dispatch` | `guardrail.unknown_tool` | a tool name the model invented is a tool *answer*, not an exception, and it never counts as evidence about the catalogue. Records the name only when it is one of `capability.WITHHELD` — anything else is text the model made up |
+| `loop._requirements` | `guardrail.requirement_rejected` | a requirement outside `RequirementKey`, or a derived one with no sample, is dropped rather than carried. Records the count and only the keys that are our own vocabulary |
+| `loop._budget` | `guardrail.budget_unreadable` | a `budget_minor` that is not a whole number of centavos is dropped, never rounded. A budget read wrong by a factor of a hundred reports "nothing fits" about a catalogue full of things that do |
+| `loop._injection` | `guardrail.injection_blocked` | the payload is redacted from `session.turns` as well as ignored — the transcript is fed to the next gate call, so leaving it there re-injects it one turn later. Records the length, never the text |
 
 Two rules inside that table are easy to undo by accident. **Ambiguity is a question, never
 a pick**: a product with two variants and none named is dropped, the same way
@@ -419,6 +440,7 @@ rendered only from data; prose carries only reasoning.
 | `packages/coros_core/evidence.py` (a declared check, a required set, an assumption) | `tests/test_evidence.py` + the guardrail table. A check the bundle requires but nothing emits blocks every recommendation, so the two move together |
 | `apps/brujula/brujula/agent/tools.py` (a tool, a group, `_slim`'s whitelist) | `tests/test_brujula_agent.py` + `brujula/agent/prompts.py`, whose stage prompts describe the tools by name + the guardrail table's four `tools.*` rows. A key added to `_slim` is a change to every prompt that renders one |
 | `apps/brujula/brujula/agent/prompts.py` (a stage, a template) | `tests/test_brujula_agent.py` — one test asserts a canned template exists for every non-advice `Intent`, so a new intent without one is a model call spent letting the model improvise a refusal |
+| `apps/brujula/brujula/agent/loop.py` (a stage, a budget, a wire model) | `tests/test_brujula_agent.py` + the guardrail table's `loop.*` rows. A new stage needs a name in `REOPENED` or it re-runs on every resume; a new `response_schema` needs a place in `loop.SCHEMAS` or nothing checks it for the `additionalProperties` 400; a check the bundle can block on needs a Spanish name in `loop._CHECKS_ES` or the person is told a check failed without being told which |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md` |
 | a touched-path gate in `infra/jenkins/Jenkinsfile` | `infra/jenkins/Jenkinsfile`; the two apps have separate images |
