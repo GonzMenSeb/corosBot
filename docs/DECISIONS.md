@@ -54,3 +54,33 @@ verify` now invoke pytest exactly as CI does, so local green means CI green. `PY
 in the Makefile for non-pytest entry points (`doctor`, `fixtures`); the Dockerfiles are
 untouched. Enforced by `TestPytestIniIsTheOnlyPlaceTheImportRootsAreDeclared` in
 `tests/test_layout.py`.
+
+### 2026-07-30 · One generic `rpc()` under `call_ucp()`, and no handshake
+
+`packages/coros_core/ucp.py` exposes two functions: `call_ucp(tool, args)` for `tools/call`
+and `rpc(method, **params)` for everything else. DecaBot needed only the former, because
+Decathlon's `initialize` and `tools/list` fail unconditionally. Probing COROS live showed the
+opposite: **both succeed**, and the single reason is the agent profile — every method on this
+endpoint returns `-32001 invalid_profile_url` without `params.arguments.meta["ucp-agent"].profile`,
+and no other placement (`params.meta`, top-level `meta`, `profile_uri`, four header spellings)
+works. So `tools/list` is sent with an `arguments` key it has no arguments for. The plan for
+this module and the first draft of the facts registry both recorded `initialize` as failing;
+that reading came from testing it without the profile. Registry corrected in the same commit,
+pinned by `tests/test_ucp.py::test_initialize_and_tools_list_both_succeed_once_the_profile_is_passed`.
+
+Consequences worth naming:
+
+- **The body is parsed before `raise_for_status()`.** COROS returns JSON-RPC errors on HTTP
+  **422** (rejected profile) and **403** (unknown tool name), where DecaBot's endpoint did not,
+  so DecaBot's status-then-body order would convert every typed `UcpToolError` into an
+  untyped `httpx.HTTPStatusError` and lose the diagnostic.
+- **A typo'd tool name reads as `-32000 AuthenticationRequired`.** Verified that the real
+  tools — `create_cart` included — answer with no credential, so a 403 is a naming bug.
+- **No `initialize()` or `list_tools()` wrapper.** Neither has a production caller; a wrapper
+  with no caller is dead code. `scripts/dump_fixtures.py` and `scripts/doctor.py` will reach
+  `tools/list` through `rpc()`, which keeps them inside the rate limiter and the error
+  taxonomy. The "only `ucp.py` posts to the endpoint" boundary is enforced by an AST scan.
+- **Pacing is DecaBot's policy, not a measured COROS limit.** `Semaphore(8)`, and the first
+  429 latches the process into serialised 1.5 s spacing for good. The latch never releases
+  on a success, because a single call is served throughout a lockout. Simulated offline —
+  inducing a real lockout to test it would cost the demo, which is the whole point.

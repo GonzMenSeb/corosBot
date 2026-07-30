@@ -37,13 +37,31 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
 
 - **Endpoint:** `https://coros.com.co/api/ucp/mcp`, `Content-Type: application/json`, no
   auth, no key, no OAuth.
-- **`tools/list` ALWAYS SUCCEEDS here** — unlike Decathlon's broken `tools/list`, COROS's
-  responds with the full tool schema when passed the Shopify public example profile. Do not
-  assume DecaBot's handshake pattern is portable.
-- **Agent profile in `arguments.meta`:** `arguments.meta["ucp-agent"].profile` = Shopify's
-  public example (`https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json`).
+- **Agent profile in `params.arguments.meta`:** `params.arguments.meta["ucp-agent"].profile`
+  = Shopify's public example
+  (`https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json`).
   This is a **capability declaration, not a credential** — the server really fetches it, so
-  it must be publicly reachable. `localhost` never works.
+  it must be publicly reachable over https. `localhost` fails "Https required".
+- **EVERY method needs the profile, and only that one placement works.** `initialize`,
+  `tools/list` and `tools/call` all fail `-32001 "UCP discovery failed" / invalid_profile_url`
+  without it. `params.meta`, a top-level `meta`, `profile_uri`, and every HTTP header tried
+  also fail. So `tools/list` is sent with an `arguments` key it has no arguments for — that
+  looks like a bug in `ucp.py` and is the only shape the server accepts.
+- **`initialize` SUCCEEDS here** (`serverInfo.name == "universal-commerce"`), and so does
+  `tools/list` (13 tools). This corrects the earlier reading of this registry and the plan,
+  both of which said `initialize` returns `-32001`: it does so only when the profile is
+  missing, which is also true of every other method. Two real divergences from DecaBot,
+  where both fail unconditionally. Nothing depends on the handshake either way, so
+  `ucp.py` still never calls it — but do not "fix" a passing `initialize`.
+- **JSON-RPC errors arrive with HTTP 422 (bad profile) or 403 (bad tool name).** The body
+  must be read **before** `raise_for_status()`, or COROS's own diagnostics collapse into a
+  bare `httpx.HTTPStatusError`. This is the ordering DecaBot did not need.
+- **`-32000 AuthenticationRequired` means the tool NAME is wrong**, not that a credential is
+  missing. Every real tool — including `create_cart` — answers unauthenticated; a typo'd
+  name is what returns 403 "A valid JWT is required to call `<name>`".
+- **`result.structuredContent` is byte-identical to `json.loads(result.content[0].text)`.**
+  The documented path is `content[0].text`; the duplicate is not a second source of truth
+  and switching to it is a change, not a cleanup.
 - **Prices come in two units, 100× apart:** Storefront feed `products.json` returns
   `price: "1099000.00"` (**major**, decimal string, COP whole units); UCP `get_product`
   returns `{"amount": 109900000, "currency": "COP"}` (**minor**, integer, centavos).
@@ -58,7 +76,12 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
 - **Responses are double-encoded.** The real body is a JSON *string* inside
   `result.content[0].text` — `json.loads()` it a second time.
 - **Schema errors arrive as `result.isError: true` with HTTP 200**, not as JSON-RPC
-  errors. Naive error handling treats a rejected call as success.
+  errors. Naive error handling treats a rejected call as success. The `isError` text is
+  sometimes a bare sentence (`"Missing required arguments: catalog"`) and sometimes a full
+  JSON envelope, so **check the flag before decoding** — decoding first raises on half of
+  them and discards the message on the other half.
+- **Every decoded body carries a `ucp` capability echo of ~4 KB.** `data.pop("ucp", None)`
+  in `ucp.py` strips it; left in, it is the largest thing in the model's context.
 
 ### COROS storefront catalog and retrieval
 
@@ -110,6 +133,11 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
 
 ## Module boundaries — enforced socially, and worth it
 
+- **Nothing posts to the UCP endpoint except `ucp.py`.** New MCP tools go through
+  `call_ucp()`; anything that is not a `tools/call` goes through `rpc()`. A second caller
+  brings its own idea of the profile, its own retry policy, and its own share of the rate
+  limit. Caught by an AST scan in `tests/test_ucp.py` — a docstring may *mention* the
+  endpoint, a code path may not name it.
 - **Nothing constructs a price except `money.py`.** All conversions between major and
   minor units happen in that one file. A price `*100` or `/100` anywhere else is a bug
   caught by the test scanner in `tests/test_money.py`.
@@ -163,7 +191,7 @@ rendered only from data; prose carries only reasoning.
 | `packages/coros_core/devices.py` | `tests/test_contracts.py` with a live probe of the storefront + the device-matching entry in this facts registry |
 | `packages/coros_core/catalog.py` | `tests/test_contracts.py` with the product count and the unpooled-retrieval entry |
 | any tool schema | `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
-| `ucp.py` rate-limiting policy | this facts registry + `tests/test_contracts.py` |
+| `packages/coros_core/ucp.py` (wire shape, error taxonomy, rate-limiting policy) | this facts registry + `tests/test_ucp.py` — the offline half and the `live` probes together |
 | a guardrail | the guardrail table + its test + the trace event |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md` |
