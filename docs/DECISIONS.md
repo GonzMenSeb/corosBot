@@ -182,3 +182,60 @@ live products on 30 Jul 2026; the `live` half of `tests/test_devices.py` is what
 The plan for this module counted six devices as not sold locally. It is ten: the feed also
 carries straps for the PACE 2 and the APEX Pro with no watch SKU, and names the gen-1 APEX
 and VERTIX in the chargers' copy. Corrected in `AGENTS.md` in the same commit as the table.
+
+### 2026-07-30 · Guardrails verify against the feed, not against the candidate
+
+The obvious shape for `check_stock` is to read `available` off the item the model proposed.
+That check passes whenever the model is wrong in the one way that matters. So every check in
+`packages/coros_core/guardrails.py` takes the catalog snapshot as a second argument and
+re-derives the answer from it: `check_provenance` rebuilds the whole `AdviceItem` from the
+feed and keeps only the model's `rationale` and `satisfies`, recording what it claimed as a
+`FieldMismatch` rather than arguing with it; `check_stock` looks the variant up and ignores
+any availability the candidate asserted. Verification through an independent code path is
+the point — a check that reads the thing it is checking is a prompt with extra steps.
+
+Two shapes fall out of that. Ambiguity is a question, never a pick: a product with two
+variants and none named is dropped rather than resolved to the first, matching
+`devices.straps_for`, and matching the one live size mistake DecaBot made with a stage that
+chose. And a price in prose is compared as a number against the set the code computed, so
+`"$1.099.000"` and `"$1099000"` are one price and `"$980.000"` is a claim.
+
+### 2026-07-30 · An absent watch has nowhere to put a substitute
+
+Ten of the fourteen devices in the registry are sold in Colombia as straps and not as
+watches, so a search for a VERTIX 2 returns six real products and none of them is a watch.
+The failure mode is not refusing — it is answering with a PACE 4 and letting the swap read
+as an answer. `UnavailableDevice` therefore has no `alternative`, `instead`, `closest` or
+`replacement` field, its two sentences are templates over that one device's own name, and
+the cleared path is a separate model whose `is_available: Literal[True]` cannot be
+constructed for a device the registry marks absent. The guarantee is the absence of a field,
+which survives a careless edit in a way a rule in a prompt does not.
+
+Finding the devices needed a scan `devices.resolve` does not offer: it answers for a whole
+string and returns one device, so "compara el VERTIX 2 con el PACE Pro" loses one.
+`devices_named()` walks token windows and asks repeatedly, and accepts a window only when
+extending it by one token still resolves to the same device. Without that guard "APEX 5"
+shrinks to the window "apex" and comes back as the gen-1 APEX — the exact substitution
+`devices._names_this_device` was written to refuse. Measured against all 45 live products:
+zero invented devices, and every locally-sold watch found in its own title.
+
+### 2026-07-30 · Colombian price text is parsed by locale and fails closed
+
+`minor_to_display` prints `$1.099.000`, so that is the form the model sees and the form
+`find_unbacked_claims` reads: `.` groups thousands, `,` is the decimal mark. A US-formatted
+`$1,099,000` is unreadable under that rule and comes back `None`, which flags it as an
+unbacked claim and scrubs it. Guessing would be worse than scrubbing: the two readings of
+that string differ by a factor of a thousand. All parsing goes through
+`money.major_string_to_minor`, so `guardrails.py` contains no rescaling of its own and the
+source scan in `tests/test_money.py` stays true.
+
+Verified before shipping: the claim patterns produce **zero** false positives when each of
+the 24 described products in `fixtures/products.json` is checked against its own
+description, and tampering with a real spec figure — `42mm` to `49mm` — is caught.
+
+### 2026-07-30 · `trace.py` lands as the ring only
+
+`guardrails.py` cannot satisfy "every verdict emits at `level="guardrail"`" without an
+`emit`, so the ring buffer, `TraceEvent` and `reset()` ship with it. Per-session sink
+binding across `asyncio.create_task()`, the storefront and UCP instrumentation, and the
+evidence bundle are deliberately not here; they arrive with `evidence.py` in this same PR.

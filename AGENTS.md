@@ -258,11 +258,26 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
 is a guarantee.** Every check is deterministic code between the model and the world,
 and every one emits a trace event at `level="guardrail"`.
 
-`LocalAvailabilityVerdict.is_available = Literal[True]` means an out-of-stock or
-region-blocked item cannot be represented in a recommendation at all — the guardrail is
-enforced by the type system. `BuyNothingVerdict` means "buy nothing" is a reachable typed
+`LocalAvailabilityVerdict.is_available = Literal[True]` means a region-blocked device
+cannot be represented as a cleared one at all — the guardrail is enforced by the type
+system, not by a branch. `BuyNothingVerdict` means "buy nothing" is a reachable typed
 outcome, not prose that slipped through. `ProvenanceVerdict` proves a price matches the
 live feed; an unbacked `"$X COP"` claim is rejected.
+
+| check in `guardrails.py` | trace event | what it guarantees |
+|---|---|---|
+| `check_provenance` | `guardrail.provenance` | every field of a rendered item is rebuilt from the feed. The model contributes a product id, a variant id and its reasoning; a title, URL or price it also sent is recorded as a `FieldMismatch` and then discarded |
+| `check_stock` | `guardrail.stock` | availability is read out of the feed, never off the candidate. A model that labels a sold-out variant `available: true` changes nothing |
+| `check_budget` | `guardrail.budget` | integer arithmetic in minor units, done in code. `nothing_fits` is a different answer from `over_by`, and an empty selection under a budget is the former |
+| `check_local_availability` | `guardrail.local_availability` | an absent watch is named, never swapped. `UnavailableDevice` has no `alternative`/`instead`/`closest` field, and both its sentences are templates over one device's own name |
+| `check_buy_nothing` | `guardrail.buy_nothing` | "buy nothing" is reachable, and `retrieval_conclusive=False` keeps a 429 from being reported as "nothing fits" |
+| `find_unbacked_claims` / `scrub_prose` | `guardrail.prose` | a spec figure in prose has to appear in a retrieval-derived field. `AdviceItem.rationale` is not one of them |
+
+Two rules inside that table are easy to undo by accident. **Ambiguity is a question, never
+a pick**: a product with two variants and none named is dropped, the same way
+`devices.straps_for` raises rather than choosing. And **`kind="discount"` never consults
+the backing text** — `compare_at_price` is deliberately unmapped, so no pre-discount number
+can reach the model at all and even a true one has no source in this pipeline.
 
 **Attribute invention is the likeliest way to be embarrassed live.** The agent will
 not invent *products* — retrieval prevents that. It will invent *properties*: `"waterproof
@@ -296,7 +311,8 @@ rendered only from data; prose carries only reasoning.
 | `packages/coros_core/models.py` | `tests/test_models.py`, and `catalog.py`'s `map_product` if the change touches `CatalogProduct` or `CatalogVariant` |
 | any tool schema | `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
 | `packages/coros_core/ucp.py` (wire shape, error taxonomy, rate-limiting policy) | this facts registry + `tests/test_ucp.py` — the offline half and the `live` probes together |
-| a guardrail | the guardrail table + its test + the trace event |
+| a guardrail | the guardrail table above + `tests/test_guardrails.py` + the trace event name. A check with no row in that table is a check nobody can review |
+| `packages/coros_core/trace.py` (event shape or levels) | every `emit(...)` call site and the guardrail table's trace-event column |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md` |
 | a touched-path gate in `infra/jenkins/Jenkinsfile` | `infra/jenkins/Jenkinsfile`; the two apps have separate images |
