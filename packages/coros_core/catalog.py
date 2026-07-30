@@ -5,13 +5,21 @@ Nothing here caches. The whole Colombian catalogue is 45 products on one page, s
 "refresh the catalogue" costs one request; a local copy would read as mocked, and stock
 served from one is a fabricated inventory claim. `fixtures/` is for offline development.
 
-THE STOREFRONT REFUSES REUSED CONNECTIONS, AND BOTH HALVES OF THAT ARE DELIBERATE.
 `client()` returns the `requests` MODULE, not a `Session`, so every call opens one
-connection and closes it. DecaBot measured this against Decathlon on 28 Jul 2026 over
-the same 24-feed burst: unpooled 24/24 at 11.4 req/s, a shared `Session` 4/24 at
-6.4 req/s, httpx 429 every time. Faster unpooled and clean, slower pooled and refused —
-so it is neither rate nor the library. `ucp.py` stays on httpx because the MCP endpoint
-is a different limiter, verified unaffected the same hour. Do not unify the clients.
+connection and closes it. **THAT CHOICE RESTS ON A MEASUREMENT TAKEN AGAINST A DIFFERENT
+STORE, AND IT HAS NEVER BEEN REPRODUCED AGAINST COROS.** DecaBot measured it against
+**Decathlon** on 28 Jul 2026 over a 24-feed burst: unpooled 24/24 at 11.4 req/s, a shared
+`Session` 4/24 at 6.4 req/s, httpx 429 every time — faster unpooled and clean, slower
+pooled and refused, so for *that* store it was neither rate nor the library. `ucp.py` stays
+on httpx because the MCP endpoint is a different limiter, verified unaffected the same hour.
+
+Do not read the paragraph above as a fact about coros.com.co. It is a transplanted
+conclusion, and `docs/DECISIONS.md` (30 Jul 2026, "What refuses us at the storefront is not
+settled") records an afternoon of COROS measurements that it does not explain — including
+`requests` refused and `curl` served in the same minute, from the same IP, over the same
+HTTP version. Whether this module should be on httpx is **an open question**, and the
+experiment that would settle it is written down there. Settle it before changing the
+transport, and do not unify the clients on the strength of the Decathlon numbers alone.
 
 Load-bearing facts encoded here (`AGENTS.md`) — these look like bugs and are not:
   * A handle is a URL slug, not a description. `correa-de-nylon-de-24-mm-morada-para-

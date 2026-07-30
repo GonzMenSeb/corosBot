@@ -827,3 +827,50 @@ the implementing lane to change it. None of that was a measurement. Two requests
 about a second and showed the original value was fine. The repo's standing rule is "never
 guess an API or payload shape — read the fixture, run the call, or read the source", and
 documentation plus a forum thread is none of the three.
+
+### 2026-07-30 · What refuses us at the storefront is not settled, and the record says so
+
+`scripts/verify_brujula.py` cannot demonstrate Brújula on live data: every live turn this
+afternoon ended `insufficient_evidence` because `products.json` answered `429`
+`local_rate_limited`. That is a P0 against the success criteria, and this entry exists because
+the investigation produced a clear-looking answer that then fell apart. The measurements are
+worth more than the conclusion, so they are recorded and the conclusion is not.
+
+All against `https://coros.com.co/products.json?limit=250`, one IP, 30 Jul 2026:
+
+1. After ~5.5 min with no requests at all: `curl` → **200**, 297 399 B.
+2. After ~6.7 min of quiet, `requests` deliberately first: `requests` → **429**. `curl` three
+   seconds later → **200**. `requests` again with `User-Agent: curl/8.5.0` → **429**.
+3. Within the next minute: `curl` over HTTP/2 → **200**. `curl --http1.1` → **200**. `httpx`
+   over HTTP/1.1 → **200**. `requests` → **429**.
+4. About thirty seconds later: `httpx` → **429** on its first read, pooled and unpooled alike.
+   `requests` → **429**. The UCP endpoint answered `httpx` in the same minute, so nothing
+   IP-wide was down.
+
+What those support: the refusal is **not** a single global per-IP window, because `curl` was
+served in the same minutes `requests` was refused. It is **not** the User-Agent, because
+`requests` wearing curl's UA was still refused. It is **not** the HTTP version, because `curl`
+was served over both. And `AGENTS.md`'s "a lone request is served throughout a lockout" is at
+best incomplete: in (2) the lone request that went first was refused.
+
+What they do **not** support is the conclusion I reached and stated out loud between (3) and
+(4) — that the `requests`/urllib3 stack is what COROS refuses, presumably by TLS fingerprint.
+Step (4) killed it: `httpx` was refused too, thirty seconds after being served. The pattern
+fits per-client-fingerprint token buckets that an afternoon of probing drained at different
+rates just as well as it fits a fingerprint block, and the second story also explains why
+`requests` — the client every one of today's bursts and retries went through — is the one that
+has never once been served.
+
+**The experiment that would settle it, and the reason it has not been run:** a genuinely long
+quiet period from this IP, 30 minutes or more with nothing touching coros.com.co, and then
+**one** `requests` call as the first request of the window. Served means buckets, and the
+transport is fine. Refused means the client is the discriminator, and this module has to move
+to httpx. It has not been run because running it requires *not* running anything else, and
+because continuing to probe is what created the hole — each experiment spends the budget the
+verification itself needs.
+
+Two things follow regardless. `catalog.py`'s docstring no longer states the no-pooling rule as
+a COROS fact: the measurement behind it is Decathlon's, and it is now labelled as transplanted
+and untested here. And the 429 handling is vindicated either way — the app refused to turn
+"could not look" into "found nothing", said so in Spanish, and emitted `catalog.unavailable`
+with the status, which is the only reason any of this was visible.
