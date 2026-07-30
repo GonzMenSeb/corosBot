@@ -298,8 +298,29 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   3000, backend 8000), one port in prod (both on 8000), compile into `.web/build/client`,
   domain-agnostic `api_url=http://localhost:8000`, skip-compile in prod, `granian` not
   `uvicorn`, session state to `./.states` on disk (DISK state manager, not NOOP).
-- **Do NOT re-read those sections here. Link to DecaBot's AGENTS.md.** The three entries
-  below are ours, and correct or sharpen what that file says.
+- **Do NOT re-read those sections here. Link to DecaBot's AGENTS.md.** The entries below are
+  ours, and correct or sharpen what that file says.
+- **`rxconfig.py` is imported with `sys.path` reduced to its own directory.** `get_config()`
+  clears the path down to the current directory, and retries with the ambient one only if that
+  raises. Verified both halves 30 Jul 2026: an `import coros_core` there raises on a bare
+  `reflex run` in `apps/brujula` and succeeds when the caller happens to export a `PYTHONPATH`
+  carrying `packages/`. Keep those files to `reflex` and the stdlib. It is also why
+  **`rx.App(theme=...)` stays on the app** although 0.9.7 deprecates it in favour of
+  `rx.plugins.RadixThemesPlugin(theme=…)` in `rxconfig.py`: the theme reads
+  `brujula/ui/theme.py`'s tokens and the config cannot. Revisit when the pin moves.
+- **The module name `rxconfig` is global to the test suite.** Reflex fixes both the filename
+  and the bare name it imports it as, and `pytest.ini` puts both app directories on `sys.path`
+  — so `import rxconfig` resolves by path order and caches the winner in `sys.modules`, handing
+  one app's config back for the other with no error anywhere. Tests load it by file path.
+- **`reflex init` fires on the first `reflex run`/`export` in a fresh clone** and seeds the app
+  directory with its own `.gitignore` and a `requirements.txt` holding nothing but the reflex
+  pin. Both are gitignored, and `tests/test_layout.py` fails if either is committed: that
+  requirements.txt shadows the root pins for anything installing from the app directory.
+- **`reflex.lock/` tracks the component set, not the Reflex version.** Brújula's export drops
+  the whole markdown chain — `react-markdown`, `react-syntax-highlighter`, the rehype/remark
+  plugins — because nothing renders markdown; the presentation prompt asks for plain prose and
+  the bubbles are `rx.text(white_space="pre-wrap")`. Re-export and re-commit the lockfile
+  whenever an app's component set changes.
 - **Reflex 0.9.7 DOES hold a dataclass state var** — verified 30 Jul 2026. It wraps one in a
   `MutableProxy`, tracks mutations through it and serialises it (sets and all) to the
   browser. So "Reflex state cannot hold a dataclass" is not why `ConversationSession` lives
@@ -461,7 +482,8 @@ rendered only from data; prose carries only reasoning.
 | `apps/brujula/brujula/state.py` (a var, a caption, the gate) | `tests/test_brujula_state.py`. A caption key must be an event something actually emits or it can never fire; a new `RequirementKey` needs a word in `_REQUIREMENT_ES` and a new declared check needs one in `_CHECK_ES`, or the rail shows an English enum to a Colombian reader; a new handler that spends a model call or reaches COROS needs the `GATE_ON and not self.unlocked` re-check, because conditional rendering is not a guard |
 | `apps/brujula/brujula/agent/loop.py` (a stage, a budget, a wire model) | `tests/test_brujula_agent.py` + the guardrail table's `loop.*` rows. A new stage needs a name in `REOPENED` or it re-runs on every resume; a new `response_schema` needs a place in `loop.SCHEMAS` or nothing checks it for the `additionalProperties` 400; a check the bundle can block on needs a Spanish name in `loop._CHECKS_ES` or the person is told a check failed without being told which |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
-| `rxconfig.py` | recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md` |
+| `rxconfig.py` | `tests/test_brujula_app.py`; recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md`. Every value in that file is load-bearing for a running instance, not a preference |
+| `apps/brujula/brujula/app.py` (a route, the gate branch, the component set) | `tests/test_brujula_app.py`, and `reflex export --frontend-only` in `apps/brujula` followed by re-committing `reflex.lock/` — the lockfile is derived from which components the tree actually uses |
 | a touched-path gate in `infra/jenkins/Jenkinsfile` | `infra/jenkins/Jenkinsfile`; the two apps have separate images |
 | the VPS deployment | nothing; merging to `main` rebuilds and redeploys. `docs/DEPLOY.md` covers the by-hand path. |
 

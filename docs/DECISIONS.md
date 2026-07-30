@@ -491,3 +491,54 @@ pure-Python path, which goes through `isinstance` and survives, so a mutation te
 `plain()` passes against an indented dump and fails against a compact one. And
 `hmac.compare_digest` raises `TypeError` on non-ASCII `str`, so the gate compares
 `_digest(typed)` against `_GATE_DIGEST`: an accented password is a refusal, not a 500.
+
+### 2026-07-30 · One route, and the gate is a branch inside it
+
+Brújula serves a single page. `index()` is `rx.cond(State.unlocked, shell, gate)`, and there is
+no `/gate` route, because a second route is a second door: `on_load` is registered per page, so a
+URL that renders the shell is a URL where the password check never ran. The same reasoning keeps
+the trace panel, the kit and the evidence rail inside that one page rather than behind routes of
+their own — everything they show is a state var the gate already covers.
+
+`rxconfig.py` carries five values and every one of them is load-bearing. `app_module_import`
+because Reflex otherwise resolves `brujula.brujula`. `frontend_port`/`backend_port` pinned because
+Reflex takes the next available port when one is busy and moves the app out from under whatever is
+proxying it — and both apps run at once in dev. `vite_allowed_hosts=True` because False allows
+localhost only and every other host gets `403 Blocked request. This host is not allowed.` on a
+healthy app. And `api_url` stays `http://localhost:8000` so one image serves every domain: the
+compiled client rewrites a same-domain host to `window.location.hostname`, upgrades `ws:`→`wss:`
+and clears the port on https. `BRUJULA_API_URL` overrides it for a dev tunnel and is documented in
+`.env.example` — DecaBot's equivalent was read by code and named nowhere.
+
+Added over DecaBot: `disable_plugins=[SitemapPlugin]`. A password-gated single route has nothing
+to put in a sitemap, and left on, the plugin prints a startup warning asking to be told either
+way.
+
+**`rx.App(theme=...)` stays on the app, deliberately, against its own deprecation warning.** 0.9.7
+says to configure `rx.plugins.RadixThemesPlugin(theme=…)` in `rxconfig.py` instead. Taking that
+advice puts the theme somewhere that cannot read `brujula/ui/theme.py`'s tokens, because
+`get_config()` imports `rxconfig.py` with `sys.path` reduced to its own directory and only retries
+with the ambient path if that raises. Both halves verified 30 Jul 2026: an `import coros_core` in
+a probe `rxconfig.py` raises under a bare environment and succeeds with `packages/` on
+`PYTHONPATH`. So config files stay on `reflex` and the stdlib, the theme stays on `rx.App`, and
+`tests/test_brujula_app.py` fails if anyone follows the warning before the pin moves.
+
+The presentation in `app.py` is plain on purpose and holds no colour literal: every surface reads
+the Radix scale the theme selects (`var(--gray-11)`, `var(--red-11)`), so PR 5's measured tokens
+replace a theme argument rather than a hunt through the file. The accent is `bronze` on `sand` —
+warm paper over the COROS monochrome, red left free for the honest refusal, and nothing DecaBot's
+indigo would recognise. Two things were carried over verbatim because DecaBot paid for them: the
+composer is `position: sticky` at the bottom of the column, since with a kit on screen the column
+runs several thousand pixels and the reply to a clarifying question sits below all of it; and
+every icon-only-below-`md` button carries an `aria_label`.
+
+Two artifacts fell out of proving the tree compiles. `reflex export --frontend-only` **shrank**
+`reflex.lock/`: the markdown chain — `react-markdown`, `react-syntax-highlighter`, the
+rehype/remark plugins — is gone, because nothing in Brújula renders markdown and the presentation
+prompt asks for plain prose. That lockfile is derived from the component set, so it is re-exported
+and re-committed whenever the tree changes; the maintenance contract now says so. And `reflex
+init` — which any first run in a fresh clone triggers — seeded `apps/brujula/` with its own
+`.gitignore` and a `requirements.txt` containing only the reflex pin. Both are now gitignored, and
+`tests/test_layout.py` fails if either is committed: that requirements.txt shadows the root pins
+for anything installing from the app directory, which is an image with reflex and no
+`google-genai` in it, failing at the first model call instead of at build time.

@@ -140,6 +140,18 @@ class TestTheOfflineSuiteIsOfflineByConstruction:
 
 
 class TestTheDependencyPinsAreTheOnesTheHostingFactsWereMeasuredOn:
+    @pytest.mark.parametrize("app", APPS)
+    def test_no_app_directory_ships_its_own_requirements_file(self, app: str) -> None:
+        path = f"apps/{app}/requirements.txt"
+        assert path not in tracked(), (
+            f"{path} is tracked by git.\n"
+            "`reflex init` writes one holding nothing but the reflex pin, and the first\n"
+            "`reflex run` in a fresh clone triggers it. Committed, it shadows the root file\n"
+            "for anything that installs from the app directory — an image with reflex and no\n"
+            "google-genai, which fails at the first model call instead of at build time.\n"
+            "It is gitignored; keep it that way."
+        )
+
     @pytest.mark.parametrize("pin", ("reflex==0.9.7", "google-genai==2.14.0"))
     def test_the_pin_is_exact(self, pin: str) -> None:
         assert pin in requirements(), (
