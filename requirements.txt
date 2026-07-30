@@ -2,6 +2,7 @@ reflex==0.9.7
 google-genai==2.14.0
 httpx
 requests
+curl-cffi==0.15.0
 feedparser
 pydantic>=2
 python-dotenv

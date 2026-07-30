@@ -22,7 +22,7 @@ from typing import Any
 
 import feedparser
 import pytest
-import requests
+from curl_cffi import requests as curl_requests
 
 from coros_core import catalog, trace
 from coros_core.catalog import BLOG_URL, PRODUCTS_URL, CatalogUnavailable, strip_untrusted
@@ -177,26 +177,35 @@ def _response(
     raw: bytes = b"",
     url: str = PRODUCTS_URL,
     **headers: str,
-) -> requests.Response:
-    r = requests.Response()
+) -> curl_requests.Response:
+    r = curl_requests.Response()
     r.status_code = status
     r.url = url
-    r._content = json.dumps(body).encode() if body is not None else raw
+    r.content = json.dumps(body).encode() if body is not None else raw
     r.headers.update(headers)
     return r
 
 
 class _Storefront:
-    """Stands in for `catalog.client()`, which is the `requests` module itself."""
+    """Stands in for `catalog.client()`, which is the `curl_cffi.requests` module itself.
 
-    def __init__(self, *responses: requests.Response | Exception) -> None:
-        self.queue: list[requests.Response | Exception] = list(responses)
+    NOTHING here opens a socket, and nothing here is a curl handle: a `curl_cffi.Response`
+    built by hand carries no `Curl` object, so there is no libcurl call to make even by
+    accident. `impersonate` is recorded rather than ignored because passing it is the
+    load-bearing part of the real call."""
+
+    def __init__(self, *responses: curl_requests.Response | Exception) -> None:
+        self.queue: list[curl_requests.Response | Exception] = list(responses)
         self.urls: list[str] = []
         self.stamps: list[float] = []
+        self.impersonated: list[str | None] = []
 
-    def get(self, url: str, timeout: float | None = None) -> requests.Response:
+    def get(
+        self, url: str, timeout: float | None = None, impersonate: str | None = None
+    ) -> curl_requests.Response:
         self.urls.append(url)
         self.stamps.append(time.monotonic())
+        self.impersonated.append(impersonate)
         item = self.queue.pop(0) if self.queue else _response(200, body=_feed(PACE_4))
         if isinstance(item, Exception):
             raise item
@@ -219,7 +228,14 @@ def unlatched(monkeypatch):
 
 @pytest.fixture
 def storefront(monkeypatch):
-    def install(*responses: requests.Response | Exception) -> _Storefront:
+    """Replaces `catalog.client()`, which is the seam every request goes through — SEM,
+    the spacing floor and the retry ladder all still run, and `curl_cffi` is never
+    reached, so no libcurl handle is ever created. A Python-level `socket` patch would NOT
+    prove that — libcurl opens its sockets from C, under cffi — so what proves it is
+    running the offline suite inside an empty network namespace:
+    `unshare -rn ./.venv/bin/python -m pytest -m "not live"`."""
+
+    def install(*responses: curl_requests.Response | Exception) -> _Storefront:
         stub = _Storefront(*responses)
         monkeypatch.setattr(catalog, "client", lambda: stub)
         return stub
@@ -227,18 +243,41 @@ def storefront(monkeypatch):
     return install
 
 
-class TestTheStorefrontRefusesReusedConnections:
-    """DecaBot measured this against Decathlon and it holds here: a pooled client is
-    refused and an unpooled one is served, faster. `client()` returns the `requests`
-    MODULE so every call opens, uses and closes one connection."""
+class TestTheStorefrontClassifiesTheFingerprint:
+    """What refuses us is the TLS/HTTP fingerprint, not the rate and not the headers.
+    Measured 30 Jul 2026 from a silent IP: `requests` 429 and `httpx` 429 on a first
+    request, system `curl` 200 in the same window, and `curl_cffi` impersonating Chrome
+    200 — while plain libcurl through `curl_cffi` got a 403 challenge page instead."""
 
-    def test_the_client_is_the_requests_module_and_not_a_session(self):
-        assert catalog.client() is requests, (
-            f"catalog.client() stopped being the `requests` module. {FACTS} records the\n"
-            "  measurement: a shared Session was refused on 20 of 24 feeds, no Session was\n"
-            "  served on 24 of 24 and faster. Re-measure before pooling this."
+    def test_the_client_is_the_impersonating_module_and_never_requests_or_httpx(self):
+        assert catalog.client() is curl_requests, (
+            "catalog.client() stopped being `curl_cffi.requests`. Python's `ssl`\n"
+            "  ClientHello is refused by this storefront unconditionally, so `requests`\n"
+            "  and `httpx` both return 429 on a first request from a silent IP."
         )
-        assert not isinstance(catalog.client(), requests.Session)
+
+    async def test_every_request_carries_the_impersonation(self, storefront):
+        stub = storefront(_response(200, body=_feed(PACE_4)))
+        await catalog.get_products()
+        assert stub.impersonated == [catalog.IMPERSONATE] == ["chrome"], (
+            "a request went out without impersonate=. Plain libcurl gets a 403 Cloudflare\n"
+            "  challenge from this storefront, which is a different failure from the 429\n"
+            "  `requests` gets — and neither is a throttle."
+        )
+
+    def test_the_impersonation_target_is_spelled_exactly_once(self):
+        """An AST walk again, so the comment above the constant stays free to quote it."""
+        tree = ast.parse((REPO / "packages" / "coros_core" / "catalog.py").read_text())
+        literals = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value == "chrome"
+        ]
+        assert len(literals) == 1, (
+            f"the impersonation target is spelled {len(literals)} times. It is load-bearing\n"
+            "  and belongs in catalog.IMPERSONATE alone — a second copy is a second thing\n"
+            "  to forget when a curl_cffi upgrade moves the profile."
+        )
 
     async def test_closing_is_a_no_op_because_nothing_is_pooled(self):
         assert await catalog.aclose() is None
@@ -258,10 +297,10 @@ class TestTheStorefrontRefusesReusedConnections:
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom) and node.module
         }
-        assert "httpx" not in imported, (
-            "catalog.py imported httpx. httpx pools by design and was 429'd every time it\n"
-            f"  was measured against a storefront ({FACTS}). ucp.py keeps httpx because the\n"
-            "  MCP endpoint is a different limiter, verified unaffected the same hour."
+        assert "httpx" not in imported and "requests" not in imported, (
+            "catalog.py imported httpx or requests. Both send Python's `ssl` handshake and\n"
+            f"  both are refused 429 by this storefront ({FACTS}). ucp.py keeps httpx\n"
+            "  because the MCP endpoint is NOT fingerprint-gated — verified the same hour."
         )
         constructed = {
             node.func.attr
@@ -269,8 +308,9 @@ class TestTheStorefrontRefusesReusedConnections:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         }
         assert "Session" not in constructed, (
-            f"catalog.py constructed a Session. {FACTS} records the measurement: a shared\n"
-            "  Session was refused on 20 of 24 feeds. Re-measure before pooling this."
+            "catalog.py constructed a Session. A pooled Session was measured SERVED here,\n"
+            "  so this is not a refusal rule — it pins that there is nothing to pool: one\n"
+            "  document per turn, so a pool only holds an idle connection between turns."
         )
 
 
@@ -494,9 +534,10 @@ class TestAnAbsentAnswerIsNotAnEmptyCatalog:
         assert caught.value.retry_after == "60", "the hint is reported, for the trace panel"
         assert time.monotonic() - started < 5.0, "and never slept on: it says 60 seconds"
         assert len(stub.urls) == 1, (
-            f"a 429 was retried. {FACTS}: measured 30 Jul 2026, 30 requests spaced 10 s apart\n"
-            "  after one 429 were ALL refused, for five unbroken minutes; it cleared after\n"
-            "  ~100 s of complete quiet. Our own retry is what keeps the limiter shut."
+            "a 429 was retried. A 429 from this storefront is a rejected TLS fingerprint,\n"
+            "  which no retry can change; and where a real limiter WAS measured, 30 requests\n"
+            "  spaced 10 s apart after one 429 were all refused for five unbroken minutes.\n"
+            "  Retrying cannot help and may prolong it, so it latches instead."
         )
 
     async def test_a_request_inside_the_cooldown_never_touches_the_network(self, storefront):
@@ -541,15 +582,50 @@ class TestAnAbsentAnswerIsNotAnEmptyCatalog:
 
     async def test_a_dropped_connection_is_retried_and_then_succeeds(self, storefront):
         stub = storefront(
-            requests.ConnectTimeout("connection to coros.com.co timed out"),
+            curl_requests.exceptions.ConnectTimeout("connection to coros.com.co timed out"),
             _response(200, body=_feed(PACE_4)),
         )
         products = await catalog.get_products()
         assert len(products) == 1
         assert len(stub.urls) == 2, (
-            f"a dropped connection was not retried. {FACTS}: the storefront limiter answers\n"
-            "  a burst with 429 *and* by dropping the TCP connection — measured 30 Jul 2026."
+            "a dropped connection was not retried. Mid-refusal the storefront sometimes\n"
+            "  gives no response at all, so a transport exception is not proof the network\n"
+            "  broke — it is retried while the latch is open."
         )
+
+    async def test_no_curl_cffi_exception_escapes_as_itself(self, storefront):
+        """curl_cffi's RequestException also subclasses OSError, so an unmapped one would
+        read downstream as a local disk or socket failure rather than a storefront
+        refusal. Everything it raises descends from CurlError, which is what _get catches."""
+        stub = storefront(*[curl_requests.exceptions.DNSError("could not resolve host")] * 6)
+        with pytest.raises(CatalogUnavailable) as caught:
+            await catalog.get_products()
+        assert caught.value.status is None and caught.value.rate_limited is False
+        assert "DNSError" in caught.value.detail
+        assert len(stub.urls) > 1, "a transport error is retried while the latch is open"
+
+    async def test_a_403_is_a_rejected_fingerprint_and_not_a_throttle(self, storefront):
+        """The failure `curl_cffi` gives when impersonation is off, wrong or out of date:
+        Cloudflare answers a challenge page. Conflating it with the 429 would put the
+        misleading "COROS refused us" excuse back into scripts/verify_brujula.py."""
+        stub = storefront(*[_response(403, raw=b"<!DOCTYPE html>Just a moment...")] * 6)
+        with pytest.raises(CatalogUnavailable) as caught:
+            await catalog.get_products()
+
+        assert caught.value.status == 403
+        assert caught.value.rate_limited is False, (
+            "a 403 set rate_limited. It is a fingerprint verdict, not a throttle, and\n"
+            "  verify_brujula.py excuses an unanswered turn on exactly that flag."
+        )
+        assert catalog.is_paced() is False, (
+            "a 403 latched the cooldown. There is nothing to wait out — waiting cannot\n"
+            "  change a ClientHello — and the latch would suppress the next real attempt."
+        )
+        assert catalog.IMPERSONATE in caught.value.detail, (
+            "the 403 detail no longer names the impersonation. It is the only place a\n"
+            "  reader learns this was a challenge and not a rate limit."
+        )
+        assert len(stub.urls) == 1, "retrying cannot change a fingerprint"
 
     async def test_a_404_is_not_retried_because_retrying_cannot_help(self, storefront):
         stub = storefront(*[_response(404, body={"errors": "Not Found"})] * 6)
@@ -726,12 +802,21 @@ async def _probe() -> dict[str, Any]:
         await asyncio.sleep(SPACING)
         out["articles"] = await catalog.get_articles()
         await asyncio.sleep(SPACING)
+        # Through the same impersonating transport, not raw `requests`: a bare `requests`
+        # call here would be refused 429 on its own fingerprint and report that as a
+        # storefront fact. These two probe the FEED's shape, so they must be served.
         out["blog_json"] = await asyncio.to_thread(
-            lambda: requests.get("https://coros.com.co/blogs/blog.json", timeout=30).status_code
+            lambda: curl_requests.get(
+                "https://coros.com.co/blogs/blog.json",
+                timeout=30,
+                impersonate=catalog.IMPERSONATE,
+            ).status_code
         )
         await asyncio.sleep(SPACING)
         out["atom_page_2"] = await asyncio.to_thread(
-            lambda: requests.get(f"{BLOG_URL}?page=2", timeout=30).content
+            lambda: curl_requests.get(
+                f"{BLOG_URL}?page=2", timeout=30, impersonate=catalog.IMPERSONATE
+            ).content
         )
     except CatalogUnavailable as exc:
         if not exc.rate_limited:

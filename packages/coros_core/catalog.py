@@ -5,21 +5,13 @@ Nothing here caches. The whole Colombian catalogue is 45 products on one page, s
 "refresh the catalogue" costs one request; a local copy would read as mocked, and stock
 served from one is a fabricated inventory claim. `fixtures/` is for offline development.
 
-`client()` returns the `requests` MODULE, not a `Session`, so every call opens one
-connection and closes it. **THAT CHOICE RESTS ON A MEASUREMENT TAKEN AGAINST A DIFFERENT
-STORE, AND IT HAS NEVER BEEN REPRODUCED AGAINST COROS.** DecaBot measured it against
-**Decathlon** on 28 Jul 2026 over a 24-feed burst: unpooled 24/24 at 11.4 req/s, a shared
-`Session` 4/24 at 6.4 req/s, httpx 429 every time — faster unpooled and clean, slower
-pooled and refused, so for *that* store it was neither rate nor the library. `ucp.py` stays
-on httpx because the MCP endpoint is a different limiter, verified unaffected the same hour.
-
-Do not read the paragraph above as a fact about coros.com.co. It is a transplanted
-conclusion, and `docs/DECISIONS.md` (30 Jul 2026, "What refuses us at the storefront is not
-settled") records an afternoon of COROS measurements that it does not explain — including
-`requests` refused and `curl` served in the same minute, from the same IP, over the same
-HTTP version. Whether this module should be on httpx is **an open question**, and the
-experiment that would settle it is written down there. Settle it before changing the
-transport, and do not unify the clients on the strength of the Decathlon numbers alone.
+The transport is `curl_cffi` impersonating Chrome, and that is not a preference: COROS
+sits behind Cloudflare and Cloudflare classifies this storefront by TLS/HTTP fingerprint.
+Anything sending Python's `ssl` ClientHello — `requests` and `httpx` alike — is refused,
+so switching between those two could never have helped. See the transport section for the
+measurements and for what the earlier, transplanted Decathlon paragraph got wrong.
+`ucp.py` stays on httpx: the MCP endpoint is NOT fingerprint-gated and answered httpx in
+the same minutes the storefront was refusing it.
 
 Load-bearing facts encoded here (`AGENTS.md`) — these look like bugs and are not:
   * A handle is a URL slug, not a description. `correa-de-nylon-de-24-mm-morada-para-
@@ -35,8 +27,8 @@ Load-bearing facts encoded here (`AGENTS.md`) — these look like bugs and are n
     `?page=`, so there is no pagination loop to write — the sitemap's 58 are not
     reachable this way.
   * In `strip_untrusted`, tags are stripped BEFORE unescaping. See the comment there.
-  * A 429 is never retried and never polled. Retrying is measurably what keeps the
-    storefront's limiter shut — see the transport section.
+  * A 429 is never retried and never polled, and a 403 is a rejected fingerprint rather
+    than a throttle. Neither is a claim about stock — see the transport section.
 
 Every refusal emits, and `evidence.py` reads those events: a turn where the storefront
 said no must not read downstream as a turn where it answered nothing. The sanitiser emits
@@ -54,7 +46,8 @@ import time
 from typing import Any
 
 import feedparser
-import requests
+from curl_cffi import CurlError
+from curl_cffi import requests as curl_requests
 
 from coros_core.models import Article, CatalogProduct, CatalogVariant
 from coros_core.money import major_string_to_minor
@@ -121,46 +114,74 @@ class CatalogUnavailable(Exception):
 
 
 def client() -> Any:
-    """The `requests` MODULE, deliberately — NOT a `requests.Session`.
+    """The `curl_cffi.requests` MODULE, deliberately — NOT a `Session`.
 
-    A Session pools connections and connection REUSE is what the storefront refuses.
-    See the module docstring for the measurement. The TLS handshake per request is the
-    price of the feed working at all, and it costs about a second across a whole turn."""
-    return requests
+    Not a claim that the storefront refuses reuse: a shared Session was measured served
+    (see the transport section). There is simply nothing to pool. The whole catalogue is
+    one document per turn, so a pool would hold an idle connection open between turns and
+    save a handshake that is never repeated inside one."""
+    return curl_requests
 
 
 async def aclose() -> None:
-    """Nothing to close — no pooled connections are held, on purpose. Kept because
-    scripts and tests call it as part of this module's contract."""
+    """Nothing to close — no pooled connections are held. Kept because scripts and tests
+    call it as part of this module's contract."""
     return None
 
 
-# ── transport: a circuit breaker, because retrying is what keeps the door shut ──
+# ── transport: a fingerprint, and a circuit breaker ────────────────────────────
 #
-# Measured against coros.com.co on 30 Jul 2026, and this is the fact the design turns on:
+# WHAT REFUSES US IS THE TLS/HTTP FINGERPRINT, NOT THE RATE. Measured against
+# coros.com.co on 30 Jul 2026, after 30+ minutes of complete silence from this IP:
 #
-#   * The limiter tolerates a short burst — 4 requests over ~20 s were served — and then
-#     refuses with HTTP 429, `Retry-After: 60`, Cloudflare, body `local_rate_limited`.
-#   * THE HINT IS NOT HONEST, AND POLLING PROLONGS THE LOCKOUT. Once refused, 30
-#     consecutive requests spaced 10 s apart were all refused, for five unbroken
-#     minutes. It cleared after ~100 s of COMPLETE QUIET. Our own retries are the thing
-#     keeping it shut, so a 429 is never retried and never polled — it latches, and every
-#     request inside the cooldown fails immediately WITHOUT touching the network.
-#   * Mid-lockout some attempts get no response at all: the connection is dropped and
-#     `requests` raises ConnectTimeout. A network exception is therefore not "the network
-#     broke", and it is retried only while the latch is open.
-#   * The `User-Agent` is not the discriminator. A browser UA was served four times in a
-#     row and then refused exactly like `python-requests/2.x`; the earlier success was
-#     the cooldown expiring, not the header. Do not "fix" this with a UA.
+#   * `requests` as the very first request: 429, body `local_rate_limited`. In the same
+#     window, minutes apart: `httpx` 429, system `curl` 200 (297 399 B), `requests` 429.
+#   * Not the headers — `requests` sending curl's exact header set (Host, curl's UA,
+#     `Accept: */*`, nothing else) was still 429. Not the UA alone either. Not the HTTP
+#     version: `curl` was served over both HTTP/2 and `--http1.1`.
+#   * `curl_cffi` with `impersonate="chrome"`: 200, 297 399 B. Plain libcurl through
+#     `curl_cffi` with no impersonation: 403 and a 6 924 B Cloudflare challenge body.
 #
-# So this diverges from DecaBot twice, in the same direction: there a 429 spaces later
-# calls by PACE_SECONDS and keeps sending, and the ladder retries a 429 up to its budget.
-# Here both would extend the outage. The latch still DECAYS, unlike ucp.py's: the whole
-# catalogue is one request per turn, so a permanent latch would tax every later turn.
+# So Cloudflare classifies by ClientHello, and `requests` -> `httpx` could never have
+# helped: both send Python's `ssl` handshake.
+#
+# POOLING IS SAFE, and the paragraph that used to sit here was wrong about it. It said
+# the storefront "refuses reused connections", which was DecaBot's Decathlon measurement
+# transplanted and never reproduced against COROS. Measured here on 30 Jul 2026: one
+# `curl_cffi.Session(impersonate=IMPERSONATE)`, two GETs of PRODUCTS_URL 8 s apart, both
+# HTTP 200 and 297 399 B — with the SAME local port (42604) on both, so the connection
+# really was reused and not silently reopened. We are served over HTTP/3 by 23.227.38.32
+# (Shopify). Reuse is therefore not what refuses us; see `client()` for why this module
+# still does not pool.
+#
+# The circuit breaker below is KEPT, with its reason downgraded. Every 429 that motivated
+# it was seen through a Python-`ssl` client, which is refused unconditionally, so the
+# "the limiter tolerates a burst of 4 and then latches for ~100 s of quiet" story is NOT
+# established for a client the storefront actually serves. What is still true is that a
+# 429 must not be retried or polled: retrying cannot change a fingerprint, and if there
+# IS a limiter underneath, retrying is the one thing measured to prolong it. So a 429
+# latches, and every request inside the cooldown fails immediately WITHOUT touching the
+# network. The latch DECAYS, unlike ucp.py's: the catalogue is one request per turn, so a
+# permanent latch would tax every later turn over one refusal.
+#
+# A network exception is not "the network broke" either — mid-refusal the connection is
+# sometimes dropped with no response at all — so it is retried only while the latch is
+# open.
+
+# Load-bearing, and spelled exactly once. Without it `curl_cffi` sends plain libcurl's
+# fingerprint and Cloudflare answers 403 with a challenge page — a DIFFERENT failure from
+# the 429 that `requests` gets, and the two are worth telling apart when this breaks:
+#   429  the ClientHello was classified as a bot's (this is what `requests` gets)
+#   403  the ClientHello was libcurl's, i.e. impersonation is off, wrong or out of date
+# Neither is a throttle, and neither is a fact about stock. `"chrome"` is curl_cffi's
+# alias for its newest bundled Chrome profile, which is why the pin in requirements.txt
+# is exact: a curl_cffi upgrade moves this target.
+IMPERSONATE = "chrome"
 
 # One in flight at a time. DecaBot allows 6 because it fetches ~24 collection feeds per
 # turn; this module fetches one document, so the only source of a burst is several
-# browser sessions at once — and a burst is the one thing measured to trip the limiter.
+# browser sessions at once. Kept even though the storefront now serves us: a served
+# client still should not burst a shop's origin.
 SEM = asyncio.Semaphore(1)
 
 MIN_INTERVAL = 0.08  # a rate floor for back-to-back turns
@@ -210,13 +231,15 @@ async def _space() -> None:
         _last_start = time.monotonic()
 
 
-async def _send(url: str) -> requests.Response:
-    """`requests` is synchronous and the app is not — this is the seam. SEM already
-    bounds it, so the thread pool never grows past that."""
-    return await asyncio.to_thread(lambda: client().get(url, timeout=REQUEST_TIMEOUT))
+async def _send(url: str) -> curl_requests.Response:
+    """`curl_cffi` is synchronous — libcurl in a C extension — and the app is not. This
+    is the seam. SEM already bounds it, so the thread pool never grows past that."""
+    return await asyncio.to_thread(
+        lambda: client().get(url, timeout=REQUEST_TIMEOUT, impersonate=IMPERSONATE)
+    )
 
 
-async def _fetch(url: str) -> requests.Response:
+async def _fetch(url: str) -> curl_requests.Response:
     async with SEM:
         await _space()
         return await _send(url)
@@ -229,7 +252,7 @@ def _delay(attempt: int, remaining: float) -> float | None:
     return None if wait > remaining else wait
 
 
-async def _get(url: str, what: str) -> requests.Response:
+async def _get(url: str, what: str) -> curl_requests.Response:
     if is_paced():
         raise CatalogUnavailable(
             url,
@@ -246,12 +269,21 @@ async def _get(url: str, what: str) -> requests.Response:
     for attempt in range(MAX_ATTEMPTS):
         try:
             r = await _fetch(url)
-        except requests.RequestException as exc:
+        except CurlError as exc:
+            # curl_cffi's whole exception tree descends from CurlError, so nothing from
+            # the transport escapes this module untyped. Its RequestException also
+            # subclasses OSError, which would otherwise read as a local disk failure.
             status, detail = None, f"{type(exc).__name__}: {exc}"[:160]
         else:
             if r.status_code < 400:
                 return r
             status, detail = r.status_code, f"HTTP {r.status_code}"
+            if r.status_code == 403:
+                # A challenge page, not a throttle: `rate_limited` stays False and the
+                # cooldown does NOT latch, because there is nothing to wait out. Retrying
+                # cannot change a fingerprint, so this breaks like any other 4xx.
+                detail = f"HTTP 403: Cloudflare challenge — impersonate={IMPERSONATE!r} rejected"
+                break
             if r.status_code == 429:
                 retry_after = r.headers.get("Retry-After")
                 engage_pacing()
