@@ -934,3 +934,154 @@ recorded the measurements and refused to publish the conclusion, which is the on
 conclusion could be corrected twice — once from "buckets" to "requests specifically", and again
 from "requests specifically" to "every Python client". Both intermediate verdicts were confident
 and wrong. The measurements were not.
+
+---
+
+### 2026-07-30 · Strava's orange is `#FC5200`, and the mark loses a surface because of it
+
+`huella/ui/theme.py` carried `STRAVA = "#FC4C02"` under a comment reading "Verbatim from
+Strava's brand assets". It was not verbatim from anything. It is Strava's *older* orange,
+which most of the web still repeats, and the file asserted it rather than measuring it —
+`tests/test_huella_theme.py` pinned `theme.STRAVA == STRAVA_ORANGE` with both sides typed
+from the same memory, so the assertion could never have caught it.
+
+Measured 30 Jul 2026 at three independent boundaries, all agreeing on `#FC5200`:
+
+| boundary | result |
+|---|---|
+| all six orange SVGs in Strava's own `1.1-Connect-with-Strava-Buttons.zip` and `1.2-Strava-API-Logos.zip` | exactly one colour each, `#FC5200` |
+| `api_logo_pwrdBy_strava_horiz_orange.png`, decoded pixel by pixel | `#FC5200` on every opaque non-black pixel |
+| developers.strava.com/guidelines, §3 "Linking to Strava Data" | names `#FC5200` for the link treatment |
+
+The two bundles are linked from the guidelines page itself, so this is the vendor's own
+shipped artifact rather than a third-party summary — which is the distinction the storefront
+entry above was written to teach.
+
+**What it costs: `SHEET_2`.** The declared pairs were `STRAVA on SHEET 3.40:1` and
+`STRAVA on SHEET_2 3.08:1`. With the real orange those become **3.31:1** and **2.9977:1** —
+and 2.9977 is under WCAG 1.4.11's 3:1 graphic floor. There is no lever: the assets carrying
+the colour may never be recoloured, so a darkened variant to reach the floor is the one fix
+the brand terms forbid. `theme.EDGE_ON["STRAVA"]` is therefore `("SHEET",)` alone, and the
+attribution block sits on pure white rather than on the inset sheet tint.
+
+**The suite would have passed anyway, and that is the more useful half of this entry.**
+`ratio()` rounded to two decimals *before* the floor comparison, so 2.9977 became exactly
+3.0 and `assert measured >= NON_TEXT` held. Every value in [2.995, 3.0) was invisible to a
+3:1 floor, and [4.495, 4.5) to AA. The helper now rounds to four places — still far inside
+the 0.01 tolerance the stated-ratio comparison allows, and no longer able to round a failure
+up into a pass. Mutation-probed three ways: reinstating `#FC4C02`, re-declaring `SHEET_2`,
+and reverting the helper each turn the suite red.
+
+`tests/test_brujula_theme.py` still carries the two-decimal helper, and it was audited rather
+than left as a known unknown: every declared pair in **both** apps was recomputed exactly and
+checked against the two dead bands — `[2.995, 3.0)` for the graphic floor and `[4.495, 4.5)`
+for AA. **Zero pairs land in either.** So Brújula has the latent hole and nothing currently
+falls into it; it was left alone rather than changed, because that suite is verified and
+green and the fix belongs with the next colour that actually needs it.
+
+**The tripwire fired, and it was right to.** The suite asserted `apart(STRAVA, FLAG) < 25`,
+with the comment "past the separation Brújula's mark uses as tellable-apart … re-read it
+before relying on either claim". The real orange is 25.6° from `FLAG`, so it fired. Re-read,
+the docstring's conclusion survives but its stated reason does not: hue was never what made
+the two one glyph. `STRAVA on FLAG` is **1.28:1**, and two marks that close in luminance are
+one mark at any angle. The assertion now keys on the contrast, which is the figure the
+never-share-a-surface rule actually rests on.
+
+**Assets are vendored rather than hot-linked**, byte-identical, at
+`apps/huella/assets/strava/`. Shipping them is what the guidelines' own download links are
+for, and a copy in the repo is the only way "unmodified" is checkable — the sha256 of each
+file is what a future edit would have to change.
+
+---
+
+### 2026-07-30 · Red means "do not lean on this", not "the window is thin"
+
+`huella/ui/theme.py`'s docstring said red was the uncertainty flag and *only* that —
+"an app whose whole premise is uncertainty-aware reasoning cannot spend its flag colour on
+a generic error". Its own registries, in the same file, had never agreed: `OUTCOME_COLOR`
+maps `fail` to `FLAG` and `LEVEL_COLOR` maps `error` to `FLAG_INK`, and both were written
+deliberately. So the rule and the app disagreed, and the app was three commits older.
+
+Two ways to close it, and they are not symmetrical.
+
+**Push the errors to amber.** This is what the docstring literally asks for, and it makes a
+hard failure and a merely thin window the same colour. That is the *exact* collapse the same
+file refuses two paragraphs later when it declines COROS's `--color-warning: #ff706b` — "a
+second red makes a window that will not hold weight and a refused request the same answer".
+Declining a second red to protect a distinction, then destroying the same distinction from
+the other side, is not a rule; it is two rules that never met.
+
+**Widen the rule, which is what shipped.** Red now says **"do not lean on what is on
+screen"** and covers three states that are one state to whoever is reading: a window too
+thin or stale to reason from (`CONFIDENCE_COLOR["none"]`), a check that ran and failed
+(`OUTCOME_COLOR["fail"]`), and a turn that broke (`LEVEL_COLOR["error"]`). Amber keeps its
+own job unchanged — **"usable with reservations"** — and a refusal arrived at correctly stays
+uncoloured, because "no compres nada" is a right answer and not a degraded one.
+
+**The boundary that actually needs policing is red-versus-amber, not red-versus-error.**
+`advice.py` already drew it correctly and for the right reason: "no pude confirmarlo" is a
+check *nobody could run*, which is amber, and a check that ran and failed is red. Those are
+different sentences about the same bundle and they were never in danger of being confused
+until the docstring implied both belonged to amber.
+
+**No token, no mapping and no rendered pair changed.** This is prose catching up to code
+that was already written this way in both registries and in every module that renders them —
+which is the argument for the direction: describe the app that ships rather than make the
+app chase a docstring. The moves
+were `theme.py`'s docstring, its `FLAG`, `OUTCOME_COLOR` and `UNCERTAINTY` comments,
+`connect.py`'s now-dangling pointer to the old rule, `advice.py`'s two restatements,
+`tests/test_huella_theme.py`'s stray-red failure message (which restated the old rule as the
+reason for a check that is really about the palette), and `docs/VISUAL-BRIEF-HUELLA.md`.
+
+**`theme.UNCERTAINTY` keeps its name and its test keeps its assertion.** The scan rejects a
+saturated red outside the five-token family, and that guards the *palette* — a sixth red
+would be a second way of saying one thing — not the *usage*, which is what widened. Renaming
+it would have been the change that looked like work.
+
+**No ratio was restated.** `tests/test_huella_theme.py` recomputes every `X on Y N.NN:1` in
+theme.py's prose from the two tokens it names and refuses a bare figure outright, so amended
+prose is the exact place a stale number would land. The one figure the new text carries,
+`FLAG on INK 4.02:1`, is the one it already carried; 121 theme tests green after the edit.
+
+---
+
+### 2026-07-30 · The pre-Strava vault value is `""`, and `CHANGE_ME` was a live bug
+
+`vault.yml.example` shipped `vault_strava_client_id: "CHANGE_ME"` and the same for the
+secret, alongside every other key it marks that way. For those two it is not a placeholder
+convention — it is a value that changes what the app renders, and the wrong one.
+
+Measured 30 Jul 2026, both halves:
+
+| what | result |
+|---|---|
+| `env.j2` rendered with `StrictUndefined`, keys present but `""` | clean file, `STRAVA_CLIENT_ID=` |
+| same template, keys **absent** | `UndefinedError: 'vault_strava_client_id' is undefined` |
+| `client.is_configured()` with `""` | **False** |
+| `client.is_configured()` with `"CHANGE_ME"` | **True** |
+
+Three consequences, in the order they bite.
+
+**Absent is not empty.** `roles/huella/templates/env.j2` references both vars
+unconditionally and `error_on_undefined_vars` is on, so deleting a line does not "leave
+Strava unconfigured" — it kills the play at Jinja render. The error names the variable and
+nothing else, so it reads as a templating fault rather than a missing integration, and the
+search starts in the wrong file.
+
+**`CHANGE_ME` is worse than absent, because it succeeds.** `is_configured()` is
+`bool(client_id() and client_secret() and redirect_uri())`, and `STRAVA_REDIRECT_URI` is
+always templated to a real URL from `huella_host`. So any truthy placeholder makes all three
+truthy, `connect.py` takes the configured branch, and Huella renders the official "Connect
+with Strava" button — which redirects to Strava with `client_id=CHANGE_ME` and fails there,
+in the vendor's UI, after the person has already committed to the action. The app's own rule
+is that no dead button is ever offered; a placeholder that satisfies a boolean breaks it.
+
+**So `""` is the correct value, not a stopgap.** It is what makes `is_configured()` false and
+`connect.py` say "esta instancia no tiene credenciales de Strava configuradas" — a true
+sentence about the deployment, rendered instead of a control that cannot work. Phase 6
+replaces the two strings and changes nothing else.
+
+The general shape is worth keeping: **a placeholder convention is only safe where the code
+tests for the placeholder, and this codebase tests for truthiness.** `CHANGE_ME` is fine for
+`vault_brujula_password`, where any non-empty value is a working gate. It is not fine for a
+credential that is validated by a third party.

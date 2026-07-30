@@ -1,0 +1,372 @@
+/* Craft layer for Huella: only what a Reflex style prop cannot express — keyframes,
+   pseudo-elements, ::selection, :focus-visible, the scrollbar, and the reset that stops
+   Radix drawing its own field inside the composer. Surfaces and hover states stay in
+   huella/ui/theme.py and in the components.
+
+   Two registers, and they do not share tokens. The default here is the INSTRUMENT: Huella
+   is dark-primary, so the page's selection, its focus ring and its scrollbar are TRACE on
+   near-black. The sheets are the light half and carry their own inks — which is why no
+   rule below forces a text colour onto a selection, and why the sheet-side focus ring is
+   mirrored as a token for the components to spend (connect.py already does) rather than
+   being applied to a selector this file cannot write: nothing in the `hu-` namespace marks
+   a light surface.
+
+   Strava's marks are the vendor's. No selector in this file matches `/strava/…`, and there
+   is no bare `img` or `svg` rule for one to inherit — the assets may never be recoloured,
+   filtered, modified or animated, and even a `max-width: 100%` would be a modification of
+   a 237×48 button. Nothing that animates here wraps one either. */
+
+:root {
+  /* ── COROS's published values ─────────────────────────────────────────────
+     Mirrored byte-for-byte from huella/ui/theme.py, case included: this file is
+     the contract's copy of those tokens, and a value edited on one side only is
+     the bug the mirror exists to make greppable. */
+  --huella-ink: #161d25;
+  --huella-graphite: #404040;
+  --huella-graphite-deep: #212121;
+  --huella-sub: #9A9A9A;
+  --huella-rule: #EEEEE0;
+  --huella-success: #3a8735;
+  --huella-flag: #ea2e41;
+
+  /* ── The instrument ───────────────────────────────────────────────────────── */
+  --huella-dash: #0C1116;
+  --huella-ink-2: #1F2833;
+  --huella-readout: #EEF3F7;
+  --huella-edge: #6B7E8C;
+  --huella-axis: #3A4753;
+  --huella-grid: rgba(238,243,247,0.09);
+
+  /* ── The trace: the accent, and the plotted series ────────────────────────── */
+  --huella-trace: #4FD1E0;
+  --huella-trace-deep: #33A0B4;
+  --huella-on-fill: #FFFFFF;
+
+  /* ── The three answers about the data itself ──────────────────────────────── */
+  --huella-flag-ink: #FF9DA6;
+  --huella-flag-well: #2A1518;
+  --huella-amber-ink: #F0C05A;
+  --huella-amber-well: #2A2113;
+  --huella-success-ink: #7FD07F;
+  --huella-success-well: #12231A;
+
+  /* ── The sheets: a full second palette ────────────────────────────────────── */
+  --huella-sheet: #FFFFFF;
+  --huella-sheet-2: #F1F4F7;
+  --huella-sheet-quiet: #5A6673;
+  --huella-sheet-edge: #7F8B97;
+  --huella-sheet-trace: #0C6E80;
+  --huella-sheet-flag-ink: #BC1730;
+  --huella-sheet-flag-well: #FBE9EC;
+  --huella-sheet-amber-ink: #714D06;
+  --huella-sheet-amber-well: #F9EEDA;
+  --huella-sheet-success-ink: #2A6527;
+  --huella-sheet-success-well: #E5F0E4;
+  --huella-sheet-line: rgba(22,29,37,0.10);
+
+  /* ── Strava's own value, unmodified ───────────────────────────────────────
+     Declared because it is a token, referenced by nothing in this file and never
+     to be: the orange arrives inside the vendored assets, and a rule that painted
+     it would be us drawing their mark. */
+  --huella-strava: #FC5200;
+
+  /* ── Geometry, easing, and the two rings ──────────────────────────────────
+     FOCUS_RING is the instrument's and is what :focus-visible spends below.
+     FOCUS_RING_SHEET is the light half's, mirrored here so the value the
+     components pass as a style prop and the value this file knows are one value. */
+  --huella-radius: 6px;
+  --huella-ease: cubic-bezier(0.22,0.61,0.36,1);
+  --huella-expo: cubic-bezier(0.16,1,0.3,1);
+  --huella-focus-ring: 0 0 0 3px rgba(79,209,224,0.34);
+  --huella-focus-ring-sheet: 0 0 0 3px rgba(12,110,128,0.28);
+}
+
+/* The document itself is the instrument, so the UA's own furniture — the root
+   scrollbar, a date picker, a spinner — has to be told which side it is on. */
+:root {
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* The tint alone, in the instrument's accent. Forcing a text colour here is the one
+   mistake the two registers punish: READOUT on SHEET is 1.12:1, so a selection styled
+   for the dashboard would erase a sheet. Each surface keeps its own ink. */
+::selection {
+  background: rgba(79,209,224,0.26);
+}
+
+/* One ring for the app, and it is the instrument's: TRACE on DASH 10.41:1. A control
+   inside a sheet carries FOCUS_RING_SHEET as its own style prop, because no selector
+   here can tell a light surface from a dark one. */
+:focus-visible {
+  outline: 2px solid var(--huella-trace);
+  outline-offset: 2px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Visually hidden, still in the accessibility tree: the page's h1, and the word a
+   status glyph is showing instead of saying. */
+.hu-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Off-screen until focused, then a real first tab stop. Surfaced like the panels it
+   jumps over — READOUT on INK 15.20:1, edged in TRACE. */
+.hu-skip {
+  position: absolute;
+  left: 0.75rem;
+  top: -4rem;
+  z-index: 50;
+  padding: 0.5rem 0.75rem;
+  background: var(--huella-ink);
+  color: var(--huella-readout);
+  border: 1px solid var(--huella-trace);
+  border-radius: var(--huella-radius);
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: top 160ms var(--huella-ease);
+}
+
+.hu-skip:focus {
+  top: 0.75rem;
+}
+
+/* Nothing claims Barlow ships tabular figures — theme.py is explicit that it was not
+   verified — so this class, not the family, is what makes a column of paces, distances
+   and prices line up. Both spellings: the feature setting is what older engines read. */
+.hu-num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.hu-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The instrument's scrollbar. The light one Radix and the UA hand out reads as a scratch
+   down a near-black panel, which is the whole reason a scroll region carries this class.
+   A scroll region inside a sheet would want SHEET_TRACE and cannot be selected from here. */
+.hu-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(79,209,224,0.30) transparent;
+  /* The log grows while a turn runs. Without a reserved gutter, every row jumps sideways
+     the moment the bar appears. */
+  scrollbar-gutter: stable;
+}
+
+.hu-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.hu-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hu-scroll::-webkit-scrollbar-thumb {
+  background: rgba(79,209,224,0.30);
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.hu-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(79,209,224,0.46);
+  background-clip: content-box;
+}
+
+/* The rail clips. `trace_panel.panel()` sets overflow:hidden on this box, and the log
+   inside it is focusable so a keyboard can scroll it — so the global ring, drawn 2px
+   outside the log's edge, is cut off exactly where it is needed. Inside the box it
+   survives, and it is the same ring: the rail is the instrument too, so nothing about
+   its colour changes here. */
+.hu-rail [role="log"]:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The composer draws the field, so Radix must not draw a second one inside it: its inset
+   ring reads as a double border and its background hides the dock's own surface. */
+.hu-dock .rt-TextFieldRoot,
+.hu-dock .rt-TextFieldRoot:focus-within {
+  box-shadow: none !important;
+  background: transparent !important;
+  outline: none !important;
+}
+
+.hu-dock input {
+  outline: none !important;
+}
+
+/* Stripping the field's ring moves the job outward: the dock is what shows focus now, or
+   nothing does. */
+.hu-dock:focus-within {
+  box-shadow: var(--huella-focus-ring);
+}
+
+/* SUB on INK 6.04:1 — the instrument is the one register where COROS's grey carries type. */
+.hu-dock input::placeholder {
+  color: var(--huella-sub);
+}
+
+/* ---------------------------------------------------------------------------
+   The one authored moment: the kit arriving.
+
+   It is the payoff of the whole turn, so it is the only thing in the app with an
+   entrance — nothing else rises, and a transcript where every row animates is a
+   default rather than a decision. The summary resolves first and the grid follows
+   as the same beat, not a second one competing.
+
+   No blur and no clip wipe, which is where this parts company with Brújula's kit:
+   over a column of figures a blur reads as a rendering fault, not as an arrival.
+
+   The default rendered state is the finished one. If this never runs, the kit is
+   simply there — nothing is invisible waiting on a script.
+   --------------------------------------------------------------------------- */
+@keyframes hu-kit-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes hu-kit-follow {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.hu-kit > :first-child {
+  animation: hu-kit-in 520ms var(--huella-expo) backwards;
+}
+
+.hu-kit > :last-child {
+  animation: hu-kit-follow 380ms var(--huella-expo) 120ms backwards;
+}
+
+/* The mark's dot while a turn runs. The ring is TRACE whichever dot it surrounds — an
+   EDGE_ON colour on all three of the surfaces the mark is drawn on — so when the throttle
+   turns the dot amber, the dot is what changed and not the signal around it. */
+@keyframes hu-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(79,209,224,0.50);
+  }
+  55% {
+    box-shadow: 0 0 0 6px rgba(79,209,224,0);
+  }
+}
+
+.hu-pulse {
+  animation: hu-pulse 1.7s ease-out infinite;
+}
+
+/* Wrong password. The gate card is the whole page, so the refusal has to be felt. */
+@keyframes hu-shake {
+  10%,
+  90% {
+    transform: translateX(-2px);
+  }
+  30%,
+  70% {
+    transform: translateX(4px);
+  }
+  50% {
+    transform: translateX(-5px);
+  }
+}
+
+.hu-shake {
+  animation: hu-shake 420ms var(--huella-ease) both;
+}
+
+/* ---------------------------------------------------------------------------
+   Reduced motion — an alternative, not an off switch.
+
+   A blanket `animation-duration: 0.001ms` is what this rule replaces, and it is worth
+   naming what that costs: the "working" pulse, the kit's arrival and the gate's refusal
+   all collapse into nothing happening, and an athlete waiting on a turn is told less
+   than they were before. Reduced motion means no vestibular triggers — no travel, no
+   scaling, no sweeping — not no information. Every moment below keeps its meaning and
+   drops its movement.
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  /* The kit still announces itself, by resolving rather than by travelling. */
+  .hu-kit > :first-child {
+    animation: hu-kit-resolve 300ms ease-out backwards;
+  }
+
+  .hu-kit > :last-child {
+    animation: hu-kit-resolve 240ms ease-out 90ms backwards;
+  }
+
+  @keyframes hu-kit-resolve {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  /* "Working" stays a visible signal: the expanding ring becomes a held one, on the same
+     dot, for exactly as long as the turn lasts. */
+  .hu-pulse {
+    animation: none;
+    box-shadow: 0 0 0 3px rgba(79,209,224,0.45);
+  }
+
+  /* The refusal is a held flag ring instead of a lurch — the class stays on while the
+     error stands, so the meaning outlives the animation that used to carry it. FLAG is
+     measured against DASH, which is what is behind the card's edge. An outline and not a
+     box-shadow: the gate card already spends its shadow on SHADOW_MD, and a style prop
+     compiles to a class of the same specificity, so the two would race. */
+  .hu-shake {
+    animation: none;
+    outline: 2px solid var(--huella-flag);
+    outline-offset: 2px;
+  }
+
+  /* Hover and focus feedback is a state change, not a journey. Kept, shortened. */
+  *,
+  *::before,
+  *::after {
+    transition-duration: 90ms !important;
+  }
+}

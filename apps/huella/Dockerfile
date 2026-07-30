@@ -1,19 +1,23 @@
 # syntax=docker/dockerfile:1
 #
-# UNVERIFIED — THIS IMAGE HAS NEVER BEEN BUILT. Huella is unfinished: as of 30 Jul 2026 the
-# app ships `huella/__init__.py`, `huella/ui/theme.py` and `huella/strava/`, and has no
-# `rxconfig.py`, no `huella/app.py` and no `assets/`. `reflex export` compiles the component
-# tree by importing the app module named by `rxconfig.py`'s `app_module_import`, so it cannot
-# run until both files exist, and the two COPY lines for `rxconfig.py` and `assets/` fail
-# before that on a context that does not carry them. Every line below is Brújula's, whose
-# build and runtime behaviour ARE verified (`docker build -f apps/brujula/Dockerfile .`, a
-# 200 on /ping, a 101 on /_event, uid 1001 writing .states). Nothing here is a claim about
-# Huella. What will verify it: `apps/huella/rxconfig.py` (app_name "huella",
-# app_module_import "huella.app", api_url localhost default, HUELLA_ALLOWED_ORIGINS,
-# frontend_port 3001 / backend_port 8001 for dev), `huella/app.py` with its module-level
-# `app` and the OAuth callback route on the api_transformer, `assets/huella.css`, and a
-# re-export of `reflex.lock/` once the component set is final — then this same build and the
-# same five runtime probes.
+# VERIFIED 30 Jul 2026, built and probed. 268 MB. `/ping` 200, the compiled `/` served with
+# Huella's own title and no Reflex badge, `/favicon.ico` 200, HEALTHCHECK reports `healthy`,
+# uid 1001 writes `/app/.states`, one granian worker, and nothing from the builder leaked —
+# bun, node, npm, npx, unzip, curl and gcc are all absent, there is no `node_modules`, and no
+# `requirements.txt` survives to shadow the root pins. `/_event` answers 101 with no Origin,
+# 101 from the allowed one and **403** from a foreign one. The OAuth callback outranks the
+# compiled frontend's catch-all in the real image, not just in a unit test:
+# `?code=…&state=…` → 303 with an empty body, POST → 405, `/oauth/strava/nope` → 404.
+#
+# Probe it the same way. The host port must be **8001**, not any free port: `api_url` is
+# baked into the bundle as `http://localhost:8001` and the compiled client only clears the
+# port on https, so over plain http the browser asks for whatever was baked. Serve it
+# anywhere else and the page renders perfectly and never connects.
+#   docker build -f apps/huella/Dockerfile -t huella:probe .
+#   docker run -d --name huella-probe -p 8001:8000 \
+#     -e HUELLA_PASSWORD=qa -e HUELLA_ALLOWED_ORIGINS=http://localhost:8001 \
+#     -e GEMINI_API_KEY=unset huella:probe
+# The origin must match too, or the `/_event` handshake is refused with the same symptom.
 #
 # Build context is the REPO ROOT, not this directory:
 #   docker build -f apps/huella/Dockerfile -t huella .

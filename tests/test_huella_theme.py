@@ -62,7 +62,14 @@ COROS_ANCHORS = {
 
 # Strava's own value, from their brand assets. It is a vendor's constant, not a choice of
 # ours, which is why it is asserted rather than measured into place.
-STRAVA_ORANGE = "#FC4C02"
+#
+# Read 30 Jul 2026 out of the two bundles developers.strava.com/guidelines links —
+# `1.1-Connect-with-Strava-Buttons.zip` and `1.2-Strava-API-Logos.zip`. All six orange SVGs
+# in them contain exactly one colour, `#FC5200`; the horizontal "Powered by Strava" PNG
+# decodes to `#FC5200` for every opaque non-black pixel; and the guidelines page names
+# `#FC5200` as the link treatment. This file used to say `#FC4C02` — Strava's older orange,
+# which is still what most of the web repeats. It was a memory, not a measurement.
+STRAVA_ORANGE = "#FC5200"
 
 # The two registers, named once. Everything about non-transfer is derived from these.
 DARK_SURFACES = ("DASH", "INK", "INK_2")
@@ -77,8 +84,15 @@ def lum(value: str) -> float:
 
 
 def ratio(a: str, b: str) -> float:
+    """Four decimals, not two, and that is load-bearing rather than fussy.
+
+    A floor is compared against this value. Rounded to the two decimals a comment states,
+    anything in [2.995, 3.0) becomes exactly 3.0 and passes a `>= NON_TEXT` assertion it
+    should fail — which is precisely where Strava's real orange lands on SHEET_2. Four
+    places still sit well inside the 0.01 tolerance the stated-ratio comparison allows.
+    """
     la, lb = lum(a), lum(b)
-    return round((max(la, lb) + 0.05) / (min(la, lb) + 0.05), 2)
+    return round((max(la, lb) + 0.05) / (min(la, lb) + 0.05), 4)
 
 
 def hue(value: str) -> float:
@@ -298,10 +312,11 @@ class TestRedIsReservedForTheUncertaintyMoment:
                 if name not in theme.UNCERTAINTY:
                     strays.append(f"{name}={value} (hue {degrees:.0f}°, sat {sat:.2f})")
         assert not strays, (
-            "Red is Huella's uncertainty colour and nothing else:\n  " + "\n  ".join(strays) + "\n"
-            "Spending it on an error, a delete or a badge means 'this advice leans on thin or\n"
-            "stale data' arrives in the same colour as everything else that went wrong. Add\n"
-            "it to UNCERTAINTY only if it really is part of that moment."
+            "Red in Huella says 'do not lean on what is on screen', and these are not it:\n  "
+            + "\n  ".join(strays) + "\n"
+            "Five tokens already carry that answer between them. A sixth red is a second way\n"
+            "of saying the same thing, and it lands on a delete or a badge that means nothing\n"
+            "of the sort. Add it to UNCERTAINTY only if it really is that answer."
         )
 
     def test_the_uncertainty_family_is_named_and_real(self) -> None:
@@ -413,10 +428,43 @@ class TestTheVendorsOrangeIsNotOurs:
             "surface they are one glyph. Keep the vendor's mark on the sheets and the flag on\n"
             "the instrument, and keep the flag a sentence rather than a dot."
         )
-        assert gap < 25, (
-            f"STRAVA and FLAG are now {gap:.1f}° apart, past the separation Brújula's mark uses\n"
-            "as tellable-apart. The docstring's reason for keeping them on separate surfaces\n"
-            "is then stale — re-read it before relying on either claim."
+
+    def test_what_makes_them_one_glyph_is_the_contrast_not_the_hue(self) -> None:
+        """The tripwire this replaces asserted `gap < 25`, and Strava's real orange is 25.6°
+        from FLAG — so it fired, correctly, on a claim that had gone stale.
+
+        Re-read, the docstring's reason survives but rests on the other figure. Brújula's
+        mark treats 25° of hue **or** 1.8:1 of contrast as tellable-apart; these two clear
+        the hue bar by half a degree and fail the contrast one by a mile. At 1.28:1 two
+        small marks are one mark whatever the angle between them, which is why the guarantee
+        is the surfaces and not the separation.
+        """
+        contrast = ratio(theme.STRAVA, theme.FLAG)
+        assert contrast < 1.8, (
+            f"STRAVA and FLAG now measure {contrast}:1, past the 1.8:1 Brújula's brand suite\n"
+            "treats as tellable-apart. That is the figure the never-share-a-surface rule\n"
+            "rests on, so re-read huella/ui/theme.py's docstring before relying on it — the\n"
+            f"hue gap ({apart(theme.STRAVA, theme.FLAG):.1f}°) was never what made them one glyph."
+        )
+
+    def test_the_inset_sheet_tint_is_excluded_because_it_measures_under_the_floor(self) -> None:
+        """The one place the vendor's real orange costs us a surface.
+
+        `#FC4C02` cleared SHEET_2 at 3.08:1 and `#FC5200` does not, by two thousandths. The
+        exclusion is recomputed here rather than written in a comment because at the two
+        decimals a comment states it rounds to exactly the floor and reads as passing.
+        """
+        measured = ratio(theme.STRAVA, colours()["SHEET_2"])
+        assert measured < NON_TEXT, (
+            f"STRAVA on SHEET_2 now measures {measured}:1 and clears {NON_TEXT}:1.\n"
+            "Strava changed their orange, or SHEET_2 moved. Re-measure both, then decide\n"
+            "whether the attribution block may sit on the inset tint after all — and update\n"
+            "theme.EDGE_ON['STRAVA'] and the docstring together if so."
+        )
+        assert "SHEET_2" not in theme.EDGE_ON["STRAVA"], (
+            f"STRAVA is declared on SHEET_2, where it measures {measured}:1 — under the\n"
+            f"{NON_TEXT}:1 graphic floor. The fix is never the orange: the assets carrying it\n"
+            "may not be recoloured, so the mark moves to SHEET or it does not render."
         )
 
     def test_the_file_says_the_orange_is_never_type_where_somebody_will_look(self) -> None:

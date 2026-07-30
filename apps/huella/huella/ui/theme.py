@@ -18,15 +18,27 @@ preference.** `--color-primary` is a button on their white storefront: GRAPHITE 
 a border, because EDGE on GRAPHITE 2.46:1 too. GRAPHITE and GRAPHITE_DEEP are therefore
 buttons inside a sheet and nowhere else, and the instrument's own control fill is TRACE.
 
-**Red is the uncertainty flag, and that is a different single job from Brújula's.**
-`#ea2e41` is COROS's call to action; Brújula spends it on the honest refusal, Huella on
-"this advice leans on thin or stale data". Nothing else may have it — an app whose whole
-premise is uncertainty-aware reasoning cannot spend its flag colour on a generic error.
-It is not a colour for words on our surfaces at any size (FLAG on INK 4.02:1), so FLAG_INK
+**Red says "do not lean on what is on screen", and that is a different single job from
+Brújula's.** `#ea2e41` is COROS's call to action; Brújula spends it on the honest refusal.
+Huella spends it on three states that are one state to whoever is reading: a window too
+thin or too stale to reason from (`CONFIDENCE_COLOR["none"]`), a check that ran and failed
+(`OUTCOME_COLOR["fail"]`), and a turn that broke (`LEVEL_COLOR["error"]`). Each is the app
+saying the figures beside it will not hold weight, and one sentence gets one colour.
+
+**The line worth policing is not red-versus-error, it is red-versus-amber.** Amber is
+"usable with reservations" — a window thinner than you would like, a bundle that could not
+be confirmed — and a refusal arrived at correctly is not coloured at all: "no compres nada"
+and "eso aquí no está" are right answers, not degraded ones. Pushing a failed check down to
+amber would put a hard failure and a merely thin window in the same colour, which is the
+collapse the paragraph below refuses when it declines COROS's own second red. This is the
+app that ships: the registries under it always read this way, and the rule now says so.
+
+Red is not a colour for words on our surfaces at any size (FLAG on INK 4.02:1), so FLAG_INK
 carries the sentence and FLAG carries the glyph and the rule.
 
-**COROS's `--color-warning: #ff706b` is deliberately not used.** A second red makes a thin
-data window and a refused request the same answer. AMBER_INK is the middle answer here.
+**COROS's `--color-warning: #ff706b` is deliberately not used.** A second red makes a window
+that will not hold weight and a refused request the same answer. AMBER_INK is the middle
+answer here.
 
 **COROS's own `--color-success: #3a8735` cannot carry words.** SUCCESS on SHEET 4.47:1
 lands three hundredths under the AA floor — their figure, not a rounding of ours — so it
@@ -42,17 +54,35 @@ cannot, and it is why the light half of this file needs its own SHEET_QUIET.
 premise of Brújula's entire register; here RULE on DASH 16.20:1 makes a "hairline" in it
 the brightest thing on the screen. The instrument's hairlines are GRID.
 
-**Strava's orange is the only colour in this file we do not own.** `#FC4C02` arrives inside
+**Strava's orange is the only colour in this file we do not own.** `#FC5200` arrives inside
 official assets — the "Powered by Strava" mark, the "Connect with Strava" button, the "View
 on Strava" link glyph — which may never be recoloured, modified or animated. So the
 attribution block is a declared *light* surface and the figure that matters is STRAVA on
-SHEET 3.40:1, which clears the graphic floor for an unmodified mark. There is no darkened
+SHEET 3.31:1, which clears the graphic floor for an unmodified mark. There is no darkened
 Strava orange in this file and there must never be one.
 
-**The vendor's orange and our flag red are not tellable apart as glyphs.** They are 23.8°
-of hue apart and STRAVA on FLAG 1.24:1. Two dots that close are one dot. The guarantee is
-that they never share a surface — STRAVA is declared on the sheets, FLAG on the instrument
-— and that the flag is never a bare dot: it is FLAG_INK words on FLAG_WELL.
+**That value was measured out of the assets, and it corrects the one this file used to
+carry.** `#FC4C02` is Strava's older orange, still repeated all over the web; it is not what
+they ship. Every SVG in Strava's own `1.1-Connect-with-Strava-Buttons.zip` and
+`1.2-Strava-API-Logos.zip` contains exactly one colour and it is `#FC5200`, the official
+horizontal PNG decodes to `#FC5200` pixel by pixel, and developers.strava.com/guidelines
+names `#FC5200` for a text link. Three boundaries, one answer.
+
+**SHEET_2 is not a surface the mark may sit on, and that is why SHEET is spelled alone.**
+The real orange on the inset sheet tint measures two thousandths *under* the 3:1 graphic
+floor. `#FC4C02` cleared it and `#FC5200` does not, so the attribution block sits on pure
+white — the only lever available, since darkening the asset is the one fix the brand terms
+forbid. `tests/test_huella_theme.py` recomputes that exclusion rather than trusting this
+paragraph, because at two decimal places the failure rounds to exactly the floor.
+
+**The vendor's orange and our flag red are not tellable apart as glyphs.** They are 25.6°
+of hue apart and STRAVA on FLAG 1.28:1 — and it is the *contrast* that makes them one glyph,
+not the hue. Brújula's mark takes either 25° of hue or a contrast bar as proof two pips
+differ; these two clear the angle by half a degree and fail the contrast outright, so the
+angle was never what was holding. That figure is recomputed in `tests/test_huella_theme.py`,
+which carries the bar this paragraph deliberately does not restate as a bare number. The
+guarantee is that the two never share a surface — STRAVA on SHEET, FLAG on the instrument —
+and that the flag is never a bare dot: it is FLAG_INK words on FLAG_WELL.
 
 **`_INK` names the variant that carries the words, not a darker one.** On the sheets that
 means darker than COROS's value; on the instrument it means lighter. Same convention as
@@ -78,7 +108,7 @@ GRAPHITE_DEEP = "#212121"  # --color-primary-darker
 SUB = "#9A9A9A"  # --color-sub-text
 RULE = "#EEEEE0"  # --color-border, declined
 SUCCESS = "#3a8735"  # --color-success
-FLAG = "#ea2e41"  # their CTA red, reserved here for the uncertainty flag
+FLAG = "#ea2e41"  # their CTA red; here the one colour that says "do not lean on this"
 
 # ── the instrument ────────────────────────────────────────────────────────────
 # Three steps, with COROS's own near-black as the middle one: the page, a panel on it, a
@@ -169,10 +199,11 @@ SHEET_SUCCESS_WELL = "#E5F0E4"
 SHEET_LINE = "rgba(22,29,37,0.10)"
 
 # ── Strava's own value, unmodified ────────────────────────────────────────────
-# Verbatim from Strava's brand assets. It is here so that nothing has to eyedrop it, and
-# so the surface it sits on is measured rather than assumed.
-#   STRAVA on SHEET 3.40:1     STRAVA on SHEET_2 3.08:1
-STRAVA = "#FC4C02"
+# Read out of Strava's own asset bundles, not off a screenshot or a memory: every orange
+# SVG they ship contains this one value and nothing else. SHEET is the only surface it is
+# declared on — see the docstring for what SHEET_2 measured.
+#   STRAVA on SHEET 3.31:1
+STRAVA = "#FC5200"
 
 # ── what the rows and the panels render ───────────────────────────────────────
 # Keyed by `coros_core.trace.Level`, `coros_core.evidence.Outcome` and
@@ -184,8 +215,9 @@ LEVEL_BG: dict[str, str] = {
     "guardrail": "rgba(79,209,224,0.12)",
     "error": "rgba(255,157,166,0.12)",
 }
-# `not_run` is not `fail` — a check nobody ran is not a check that failed — so it gets the
-# secondary type colour and a dash, never the flag.
+# `fail` takes the flag on purpose: a check that ran and failed is the same answer as a
+# window that will not hold weight. `not_run` is not `fail` — a check nobody ran is not a
+# check that failed — so it gets the secondary type colour and a dash, never the flag.
 OUTCOME_COLOR: dict[str, str] = {"pass": SUCCESS, "fail": FLAG, "not_run": SUB}
 # The whole reason Huella exists as a separate app. `none` is the flag moment.
 CONFIDENCE_COLOR: dict[str, str] = {
@@ -241,7 +273,9 @@ EDGE_ON: dict[str, tuple[str, ...]] = {
     "FLAG": ("DASH", "INK", "INK_2"),
     "SUCCESS": ("DASH", "INK", "INK_2", "SHEET", "SHEET_2"),
     "SHEET_EDGE": ("SHEET", "SHEET_2"),
-    "STRAVA": ("SHEET", "SHEET_2"),
+    # SHEET alone: the vendor's real orange lands under the graphic floor on SHEET_2 and
+    # the asset carrying it may not be darkened to rescue it.
+    "STRAVA": ("SHEET",),
 }
 
 RULE_ONLY: dict[str, str] = {
@@ -268,7 +302,8 @@ RULE_ONLY: dict[str, str] = {
 }
 
 # The scan in tests/test_huella_theme.py rejects a saturated red anywhere outside this
-# tuple, which is what keeps the flag's colour from being spent on a generic error.
+# tuple. It guards the palette, not the usage: these five carry the "do not lean on this"
+# answer between them, and a sixth red would only be a second way of saying it.
 UNCERTAINTY: tuple[str, ...] = (
     "FLAG",
     "FLAG_INK",

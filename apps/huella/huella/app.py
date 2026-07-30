@@ -30,10 +30,15 @@ shell branches on, so a second route is a second door.
 Everything on screen comes off `State` — prices already formatted, requirement and check
 names already in Spanish, the uncertainty verdict already a set of values. Nothing here reads
 the model's prose except the chat bubbles, which are the one place it belongs. The surfaces
-are composed inline for now and move into `huella/ui/*` as that lane lands; `ui/theme.py` is
-already the only source of a colour in this file, so nothing here has to change when they do.
-`rx.theme` is handed the Radix scales the theme picked, because `rxconfig.py` cannot read that
-file — `get_config()` imports it with `sys.path` cut to its own directory.
+now live in `huella/ui/*`; what is left here is the wiring, the conversation itself and the
+gate. `rx.theme` is handed the Radix scales the theme picked, because `rxconfig.py` cannot
+read that file — `get_config()` imports it with `sys.path` cut to its own directory.
+
+**`assets/huella.css` is listed in `stylesheets=`, and that is what makes the `hu-` classes
+real.** Reflex serves `assets/` at the web root. A component naming a class with no rule
+behind it is a silent no-op — the thinking pip simply stops moving and nothing warns you —
+so the stylesheet and the class names in `ui/*` are one contract. The same root is what
+serves `/strava/…`, the vendored attribution marks.
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ from starlette.applications import Starlette
 
 from huella import oauth, privacy
 from huella.state import State
+from huella.ui import advice, brand, connect, trace_panel, training
 from huella.ui.theme import (
     AMBER_INK,
     APPEARANCE,
@@ -53,41 +59,29 @@ from huella.ui.theme import (
     DASH,
     EDGE,
     FLAG_INK,
-    FLAG_WELL,
     FONT,
     FONT_HREF,
     GRID,
     INK,
     INK_2,
-    MONO,
-    ON_FILL,
     RADIUS,
     RADIUS_LG,
-    RADIUS_PILL,
-    RADIUS_SM,
     RADIX_ACCENT,
     RADIX_GRAY,
     RADIX_RADIUS,
     RADIX_SCALING,
-    RAIL_W,
     READOUT,
     SHADOW_MD,
-    SHEET,
-    SHEET_EDGE,
-    SHEET_QUIET,
-    SHEET_TRACE,
-    STRAVA,
     SUB,
-    SUCCESS_INK,
     TRACE,
     TRACE_DEEP,
     TRACK_DISPLAY,
-    TRACK_EYEBROW,
-    TRACK_READOUT,
 )
 
-NAME = "Huella"
-TAGLINE = "Lo que tu entrenamiento ya demostró"
+STYLESHEET = "/huella.css"
+
+NAME = brand.NAME
+TAGLINE = brand.TAGLINE
 TITLE = f"{NAME} — {TAGLINE.lower()}"
 DESCRIPTION = (
     "Conecta tu Strava y Huella deriva de tus actividades reales qué del catálogo de COROS "
@@ -95,7 +89,8 @@ DESCRIPTION = (
 )
 
 MAIN_ID = "huella-conversacion"
-RAIL_ID = "huella-registro"
+# The rail's id belongs to the rail. The header's aria-controls points at it, and two
+# spellings of one id is a control that announces it opens something that does not exist.
 HEADER_H = "4.5rem"
 
 # The sweeper's period. `privacy.sweep()` already runs on every session touch, so this is
@@ -117,247 +112,6 @@ api = Starlette(routes=list(oauth.ROUTES))
 
 
 # ── the instrument ────────────────────────────────────────────────────────────
-
-
-def _eyebrow(text: str) -> rx.Component:
-    return rx.text(
-        text,
-        size="1",
-        weight="bold",
-        color=SUB,
-        letter_spacing=TRACK_EYEBROW,
-        text_transform="uppercase",
-    )
-
-
-def _panel(*children: rx.Component, **props) -> rx.Component:
-    return rx.vstack(
-        *children,
-        width="100%",
-        align="start",
-        spacing="2",
-        padding="0.9rem 1rem",
-        background=INK,
-        border=f"1px solid {GRID}",
-        border_radius=RADIUS_LG,
-        **props,
-    )
-
-
-def _chip(label: rx.Var | str) -> rx.Component:
-    return rx.text(
-        label,
-        size="1",
-        color=AMBER_INK,
-        padding="0.15rem 0.55rem",
-        border_radius=RADIUS_PILL,
-        background=INK_2,
-    )
-
-
-def _notice() -> rx.Component:
-    return rx.fragment(
-        rx.cond(
-            State.strava_error != "",
-            rx.hstack(
-                rx.icon("triangle_alert", size=16, color=FLAG_INK, flex_shrink="0"),
-                rx.text(State.strava_error, color=FLAG_INK, size="2", line_height="1.6"),
-                role="alert",
-                spacing="2",
-                align="start",
-                width="100%",
-                padding="0.7rem 0.85rem",
-                background=FLAG_WELL,
-                border_radius=RADIUS_SM,
-            ),
-        ),
-        rx.cond(
-            State.strava_notice != "",
-            rx.hstack(
-                rx.icon("circle_check", size=16, color=SUCCESS_INK, flex_shrink="0"),
-                rx.text(State.strava_notice, color=SUCCESS_INK, size="2", line_height="1.6"),
-                role="status",
-                spacing="2",
-                align="start",
-                width="100%",
-                padding="0.7rem 0.85rem",
-                background=INK_2,
-                border_radius=RADIUS_SM,
-            ),
-        ),
-        rx.cond(
-            State.error != "",
-            rx.hstack(
-                rx.icon("triangle_alert", size=16, color=FLAG_INK, flex_shrink="0"),
-                rx.text(State.error, color=FLAG_INK, size="2", line_height="1.6"),
-                role="alert",
-                spacing="2",
-                align="start",
-                width="100%",
-                padding="0.7rem 0.85rem",
-                background=FLAG_WELL,
-                border_radius=RADIUS_SM,
-            ),
-        ),
-    )
-
-
-def _strava() -> rx.Component:
-    """A declared LIGHT surface, and that is a theme rule rather than a taste: Strava's
-    `#FC4C02` may only appear unmodified on a sheet, where it is legible without being
-    darkened. The official "Connect with Strava" asset belongs here and is not shipped yet —
-    until it is, the orange is the panel's own edge and never a recoloured mark."""
-    return rx.vstack(
-        _eyebrow("Strava"),
-        rx.cond(
-            State.connected,
-            rx.vstack(
-                rx.text(
-                    "Cuenta conectada. Leo tus actividades, nunca tus datos personales.",
-                    size="2",
-                    color=INK,
-                    line_height="1.6",
-                ),
-                rx.hstack(
-                    rx.text("huella del par", size="1", color=SHEET_QUIET),
-                    rx.text(
-                        State.token_fingerprint,
-                        size="1",
-                        color=SHEET_QUIET,
-                        font_family=MONO,
-                        letter_spacing=TRACK_READOUT,
-                    ),
-                    spacing="2",
-                    align="center",
-                ),
-                rx.hstack(
-                    rx.button(
-                        "Desconectar",
-                        on_click=State.disconnect_strava,
-                        size="2",
-                        cursor="pointer",
-                        color=ON_FILL,
-                        background=SHEET_TRACE,
-                    ),
-                    rx.button(
-                        "Borrar todo lo mío",
-                        on_click=State.forget_me,
-                        size="2",
-                        cursor="pointer",
-                        color=SHEET_TRACE,
-                        background=SHEET,
-                        border=f"1px solid {SHEET_EDGE}",
-                    ),
-                    spacing="2",
-                ),
-                spacing="2",
-                align="start",
-                width="100%",
-            ),
-            rx.vstack(
-                rx.text(
-                    "Sin Strava conectado. Huella funciona igual — te pregunta en vez de "
-                    "deducir, y lo dice.",
-                    size="2",
-                    color=INK,
-                    line_height="1.6",
-                ),
-                rx.cond(
-                    State.strava_configured,
-                    rx.button(
-                        "Conectar con Strava",
-                        on_click=State.connect_strava,
-                        size="2",
-                        cursor="pointer",
-                        color=ON_FILL,
-                        background=SHEET_TRACE,
-                    ),
-                    rx.text(
-                        "Esta instancia no tiene credenciales de Strava configuradas.",
-                        size="1",
-                        color=SHEET_QUIET,
-                    ),
-                ),
-                spacing="2",
-                align="start",
-                width="100%",
-            ),
-        ),
-        width="100%",
-        align="start",
-        spacing="2",
-        padding="0.9rem 1rem",
-        background=SHEET,
-        border_left=f"3px solid {STRAVA}",
-        border_radius=RADIUS,
-    )
-
-
-def _uncertainty() -> rx.Component:
-    """D2 on screen. The statement is `UncertaintyVerdict.statement`, regenerated and
-    compared by the verdict's own validator, so nothing a model wrote reaches this box."""
-    return rx.cond(
-        State.uncertainty_statement != "",
-        _panel(
-            rx.hstack(
-                _eyebrow("En qué me apoyo"),
-                rx.spacer(),
-                rx.text(State.confidence_label, size="1", color=SUB),
-                width="100%",
-                align="center",
-            ),
-            rx.text(State.uncertainty_statement, size="2", color=READOUT, line_height="1.65"),
-            rx.cond(
-                State.uncertainty_flags.length() > 0,
-                rx.hstack(
-                    rx.foreach(State.uncertainty_flags, _chip),
-                    spacing="2",
-                    wrap="wrap",
-                ),
-            ),
-            rx.cond(
-                State.cold_start,
-                rx.text(State.cold_start_reason, size="1", color=AMBER_INK, line_height="1.6"),
-            ),
-            rx.cond(
-                State.mode_label != "",
-                rx.text(State.mode_label, size="1", color=SUB, line_height="1.6"),
-            ),
-            border_left=f"3px solid {TRACE}",
-        ),
-    )
-
-
-def _requirements() -> rx.Component:
-    return rx.cond(
-        State.has_requirements,
-        _panel(
-            _eyebrow("Lo que entendí de tu entrenamiento"),
-            rx.foreach(
-                State.requirements,
-                lambda row: rx.hstack(
-                    rx.text(row.label, size="2", color=SUB, width="11rem", flex_shrink="0"),
-                    rx.text(
-                        row.value,
-                        size="2",
-                        color=READOUT,
-                        font_family=MONO,
-                        letter_spacing=TRACK_READOUT,
-                    ),
-                    rx.spacer(),
-                    # The provenance, not a tone. `derived` comes off the Requirement.
-                    rx.text(
-                        rx.cond(row.derived, "de tu historial", "lo dijiste tú"),
-                        size="1",
-                        color=rx.cond(row.derived, TRACE, AMBER_INK),
-                    ),
-                    width="100%",
-                    align="center",
-                    spacing="2",
-                ),
-            ),
-        ),
-    )
 
 
 def _transcript() -> rx.Component:
@@ -426,123 +180,6 @@ def _transcript() -> rx.Component:
     )
 
 
-def _questions() -> rx.Component:
-    return rx.cond(
-        State.has_questions,
-        _panel(
-            _eyebrow("Lo que me falta saber"),
-            rx.foreach(
-                State.questions,
-                lambda question: rx.text(question, size="2", color=READOUT, line_height="1.65"),
-            ),
-        ),
-    )
-
-
-def _kit() -> rx.Component:
-    return rx.cond(
-        State.has_cards,
-        _panel(
-            rx.hstack(
-                _eyebrow("Lo que te sirve"),
-                rx.spacer(),
-                rx.text(
-                    State.total_display,
-                    size="2",
-                    color=READOUT,
-                    font_family=MONO,
-                    letter_spacing=TRACK_READOUT,
-                ),
-                width="100%",
-                align="center",
-            ),
-            rx.foreach(
-                State.cards,
-                lambda card: rx.vstack(
-                    rx.link(
-                        card.title,
-                        href=card.product_url,
-                        is_external=True,
-                        size="3",
-                        color=TRACE,
-                    ),
-                    rx.text(
-                        card.price_display,
-                        size="2",
-                        color=READOUT,
-                        font_family=MONO,
-                        letter_spacing=TRACK_READOUT,
-                    ),
-                    rx.text(card.rationale, size="2", color=SUB, line_height="1.6"),
-                    width="100%",
-                    align="start",
-                    spacing="1",
-                    padding="0.6rem 0.7rem",
-                    background=INK_2,
-                    border_radius=RADIUS_SM,
-                ),
-            ),
-        ),
-    )
-
-
-def _verdict() -> rx.Component:
-    return rx.cond(
-        State.is_refusal,
-        _panel(
-            _eyebrow("La respuesta honesta"),
-            rx.foreach(
-                State.unavailable,
-                lambda name: rx.text(
-                    name, size="2", color=FLAG_INK, line_height="1.6"
-                ),
-            ),
-            rx.foreach(
-                State.caveats,
-                lambda caveat: rx.text(caveat, size="2", color=SUB, line_height="1.6"),
-            ),
-            border_left=f"3px solid {FLAG_INK}",
-        ),
-    )
-
-
-def _evidence() -> rx.Component:
-    return rx.cond(
-        State.has_evidence,
-        _panel(
-            rx.hstack(
-                _eyebrow("Lo que verifiqué"),
-                rx.spacer(),
-                rx.text(
-                    State.checks_summary,
-                    size="1",
-                    color=rx.cond(State.blocked, FLAG_INK, SUCCESS_INK),
-                    font_family=MONO,
-                ),
-                width="100%",
-                align="center",
-            ),
-            rx.foreach(
-                State.checks,
-                lambda check: rx.hstack(
-                    rx.text(
-                        check.outcome,
-                        size="1",
-                        color=rx.cond(check.outcome == "pass", SUCCESS_INK, AMBER_INK),
-                        font_family=MONO,
-                        width="5rem",
-                        flex_shrink="0",
-                    ),
-                    rx.text(check.label, size="2", color=READOUT),
-                    width="100%",
-                    align="center",
-                    spacing="2",
-                ),
-            ),
-        ),
-    )
-
-
 def _composer() -> rx.Component:
     return rx.form(
         rx.hstack(
@@ -576,56 +213,12 @@ def _composer() -> rx.Component:
     )
 
 
-def _rail() -> rx.Component:
-    return rx.cond(
-        State.show_trace,
-        rx.box(
-            _eyebrow("Registro"),
-            rx.foreach(
-                State.trace,
-                lambda row: rx.vstack(
-                    rx.hstack(
-                        rx.text(
-                            row.event,
-                            size="1",
-                            color=rx.cond(row.level == "error", FLAG_INK, TRACE),
-                            font_family=MONO,
-                        ),
-                        rx.spacer(),
-                        rx.text(row.seq, size="1", color=SUB, font_family=MONO),
-                        width="100%",
-                        align="center",
-                    ),
-                    rx.text(row.summary, size="1", color=SUB, white_space="pre-wrap"),
-                    width="100%",
-                    align="start",
-                    spacing="1",
-                    padding="0.4rem 0.5rem",
-                    border_bottom=f"1px solid {GRID}",
-                ),
-            ),
-            id=RAIL_ID,
-            role="log",
-            width=["100%", "100%", RAIL_W],
-            flex_shrink="0",
-            max_height=f"calc(100vh - {HEADER_H})",
-            overflow_y="auto",
-            padding="1rem 0.9rem",
-            background=INK,
-            border_left=f"1px solid {GRID}",
-            position=["static", "static", "sticky"],
-            top=HEADER_H,
-        ),
-    )
-
-
 def _header() -> rx.Component:
     return rx.hstack(
+        brand.mark(size="2.1rem", surface=INK),
         rx.vstack(
-            rx.heading(
-                NAME, as_="h1", size="5", color=READOUT, letter_spacing=TRACK_DISPLAY
-            ),
-            rx.text(TAGLINE, size="1", color=SUB),
+            brand.wordmark(size="1.35rem", as_="h1"),
+            brand.credit(),
             spacing="1",
             align="start",
         ),
@@ -636,7 +229,7 @@ def _header() -> rx.Component:
             on_click=State.toggle_trace,
             aria_label="Mostrar u ocultar el registro",
             aria_expanded=State.show_trace,
-            aria_controls=RAIL_ID,
+            aria_controls=trace_panel.RAIL_ID,
             size="2",
             cursor="pointer",
             flex_shrink="0",
@@ -693,16 +286,21 @@ def _skip_link() -> rx.Component:
 
 
 def _column() -> rx.Component:
+    # `connect.panel()` already carries the "Powered by Strava" mark, so nothing here places
+    # `connect.attribution()` a second time: two of the vendor's marks on one screen is the
+    # prominence their terms are about.
     return rx.vstack(
-        _notice(),
-        _strava(),
-        _uncertainty(),
-        _requirements(),
+        connect.notices(),
+        connect.panel(),
+        training.uncertainty(),
+        training.window(),
+        training.requirements(),
         _transcript(),
-        _questions(),
-        _verdict(),
-        _kit(),
-        _evidence(),
+        advice.questions(),
+        advice.verdict(),
+        advice.kit(),
+        advice.notes(),
+        advice.evidence(),
         # Sticky, not last in the column: with a kit on screen the column runs several
         # thousand pixels, and the next question sits below all of it.
         rx.box(
@@ -739,7 +337,7 @@ def _shell() -> rx.Component:
                 width="100%",
                 justify="center",
             ),
-            _rail(),
+            trace_panel.panel(top=HEADER_H),
             direction=rx.breakpoints(initial="column", lg="row"),
             width="100%",
             align="start",
@@ -754,8 +352,18 @@ def _shell() -> rx.Component:
 def _gate() -> rx.Component:
     return rx.center(
         rx.vstack(
-            rx.heading(NAME, as_="h1", size="7", color=READOUT, letter_spacing=TRACK_DISPLAY),
-            rx.text(TAGLINE, size="2", color=SUB),
+            rx.hstack(
+                brand.mark(size="2.6rem", surface=INK),
+                rx.vstack(
+                    brand.wordmark(size="1.8rem", as_="h1"),
+                    brand.tagline(),
+                    spacing="1",
+                    align="start",
+                ),
+                spacing="3",
+                align="center",
+                width="100%",
+            ),
             rx.form(
                 rx.hstack(
                     rx.input(
@@ -845,7 +453,7 @@ app = rx.App(
         # App(style=...). Setting it here is what actually applies Barlow.
         font_family=FONT,
     ),
-    stylesheets=[FONT_HREF],
+    stylesheets=[FONT_HREF, STYLESHEET],
     style={"background": DASH, "color": READOUT, "font_family": FONT},
 )
 app.add_page(
