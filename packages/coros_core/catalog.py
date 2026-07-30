@@ -30,8 +30,10 @@ Load-bearing facts encoded here (`AGENTS.md`) — these look like bugs and are n
   * A 429 is never retried and never polled. Retrying is measurably what keeps the
     storefront's limiter shut — see the transport section.
 
-No trace events yet, exactly as in `ucp.py`: `trace.py` arrives with PR 3 and wires
-both. The emit points are the `emit(...)`-shaped comments in `_get`.
+Every refusal emits, and `evidence.py` reads those events: a turn where the storefront
+said no must not read downstream as a turn where it answered nothing. The sanitiser emits
+only when it actually removed an injected segment, and it carries counts rather than the
+matched text — an evidence bundle gets pasted into a model.
 """
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ import requests
 
 from coros_core.models import Article, CatalogProduct, CatalogVariant
 from coros_core.money import major_string_to_minor
+from coros_core.trace import emit
 
 BASE = "https://coros.com.co"
 
@@ -77,7 +80,11 @@ class CatalogUnavailable(Exception):
     product is a fact about stock, this is the absence of one. Reporting it as "nothing
     is available" invents an inventory claim out of a request that never completed.
 
-    `retry_after` is reported rather than slept on — see the transport section."""
+    `retry_after` is reported rather than slept on — see the transport section.
+
+    Constructing one emits `catalog.unavailable`. The emit lives here rather than at the
+    six raise sites so a new failure path cannot be added without a trace event: an
+    unrecorded refusal reads downstream as a catalogue that answered nothing."""
 
     def __init__(
         self,
@@ -92,6 +99,17 @@ class CatalogUnavailable(Exception):
         self.detail = detail
         self.retry_after = retry_after
         self.rate_limited = status == 429
+        emit(
+            "catalog.unavailable",
+            {
+                "url": url,
+                "status": status,
+                "detail": detail,
+                "retry_after": retry_after,
+                "rate_limited": self.rate_limited,
+            },
+            "error",
+        )
 
 
 def client() -> Any:
@@ -228,7 +246,17 @@ async def _get(url: str, what: str) -> requests.Response:
             status, detail = r.status_code, f"HTTP {r.status_code}"
             if r.status_code == 429:
                 retry_after = r.headers.get("Retry-After")
-                engage_pacing()  # emit("catalog.rate_limited", …, "error") — PR 3
+                engage_pacing()
+                emit(
+                    "catalog.rate_limited",
+                    {
+                        "what": what,
+                        "url": url,
+                        "retry_after": retry_after,
+                        "cooldown_s": round(cooldown_remaining()),
+                    },
+                    "error",
+                )
                 break  # retrying is measurably what keeps the limiter shut
             if r.status_code < 500:  # 404 and friends: retrying cannot help either
                 break
@@ -236,9 +264,12 @@ async def _get(url: str, what: str) -> requests.Response:
         wait = _delay(attempt, deadline - time.monotonic())
         if wait is None or attempt == MAX_ATTEMPTS - 1:
             break
-        await asyncio.sleep(wait)  # emit("catalog.retry", …) — PR 3
+        emit(
+            "catalog.retry",
+            {"what": what, "attempt": attempt + 1, "wait_s": round(wait, 3), "detail": detail},
+        )
+        await asyncio.sleep(wait)
 
-    # emit("catalog.unavailable", …, "error") — PR 3
     raise CatalogUnavailable(url, status, f"{what}: {detail}", retry_after)
 
 
@@ -324,16 +355,30 @@ def strip_untrusted(text: str | None, max_chars: int = DESCRIPTION_CHARS) -> str
 
     # Tags become segment breaks, not spaces: an injection lives in its own <p>, and
     # collapsing that boundary makes the surrounding real copy collateral damage.
-    kept = []
+    kept, injected = [], 0
     for part in re.split(r"(?<=[.!?])\s+|\n+", plain):
         part = _WS.sub(" ", part).strip()
-        if part and not _INJECTION.search(part):
-            kept.append(part)
+        if not part:
+            continue
+        if _INJECTION.search(part):
+            injected += 1
+            continue
+        kept.append(part)
 
     out = _WS.sub(" ", " ".join(kept)).strip()
     if len(out) > max_chars:
         out = out[:max_chars].rsplit(" ", 1)[0] + "…"
-    return out  # emit("guardrail.untrusted_text", …, "guardrail") — PR 3
+
+    if injected:
+        # Counts, never the matched text: an evidence bundle built from these events gets
+        # pasted into a model, and carrying the attack verbatim launders it back into a
+        # prompt. Silence here means nothing matched, which is the ordinary case.
+        emit(
+            "guardrail.untrusted_text",
+            {"segments_dropped": injected, "chars_in": len(str(text)), "chars_out": len(out)},
+            "guardrail",
+        )
+    return out
 
 
 # ── normalisation ──────────────────────────────────────────────────────────────
@@ -393,7 +438,16 @@ def normalize(
     for item in raw:
         try:
             products.append(map_product(item))
-        except Exception:  # emit("catalog.unmappable", …, "error") — PR 3
+        except Exception as exc:
+            emit(
+                "catalog.unmappable",
+                {
+                    "product_id": str(item.get("id", "") if isinstance(item, dict) else ""),
+                    "handle": (item.get("handle", "") if isinstance(item, dict) else ""),
+                    "error": f"{type(exc).__name__}: {exc}"[:200],
+                },
+                "error",
+            )
             continue
     if not products:
         raise CatalogUnavailable(PRODUCTS_URL, 200, f"none of {len(raw)} products could be read")
@@ -438,7 +492,15 @@ def parse_articles(feed: bytes | str) -> tuple[Article, ...]:
     for entry in parsed.entries:
         try:
             articles.append(map_article(entry))
-        except Exception:  # emit("catalog.unmappable_article", …, "error") — PR 3
+        except Exception as exc:
+            emit(
+                "catalog.unmappable_article",
+                {
+                    "article_id": str(entry.get("id") or entry.get("link") or ""),
+                    "error": f"{type(exc).__name__}: {exc}"[:200],
+                },
+                "error",
+            )
             continue
     return tuple(articles)
 

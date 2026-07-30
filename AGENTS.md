@@ -264,7 +264,7 @@ system, not by a branch. `BuyNothingVerdict` means "buy nothing" is a reachable 
 outcome, not prose that slipped through. `ProvenanceVerdict` proves a price matches the
 live feed; an unbacked `"$X COP"` claim is rejected.
 
-| check in `guardrails.py` | trace event | what it guarantees |
+| check | trace event | what it guarantees |
 |---|---|---|
 | `check_provenance` | `guardrail.provenance` | every field of a rendered item is rebuilt from the feed. The model contributes a product id, a variant id and its reasoning; a title, URL or price it also sent is recorded as a `FieldMismatch` and then discarded |
 | `check_stock` | `guardrail.stock` | availability is read out of the feed, never off the candidate. A model that labels a sold-out variant `available: true` changes nothing |
@@ -272,12 +272,22 @@ live feed; an unbacked `"$X COP"` claim is rejected.
 | `check_local_availability` | `guardrail.local_availability` | an absent watch is named, never swapped. `UnavailableDevice` has no `alternative`/`instead`/`closest` field, and both its sentences are templates over one device's own name |
 | `check_buy_nothing` | `guardrail.buy_nothing` | "buy nothing" is reachable, and `retrieval_conclusive=False` keeps a 429 from being reported as "nothing fits" |
 | `find_unbacked_claims` / `scrub_prose` | `guardrail.prose` | a spec figure in prose has to appear in a retrieval-derived field. `AdviceItem.rationale` is not one of them |
+| `catalog.strip_untrusted` | `guardrail.untrusted_text` | an injected segment was removed from vendor free text. Emitted only when something was removed, and it carries counts — never the matched text, which an evidence bundle would paste back into a model |
+| `evidence.build` | `evidence.bundle` | the advice agrees with the verdicts, and every check a recommendation requires actually ran. Derived from the trace, so a stage cannot self-certify; a required check with no event means `accepted=False` |
 
 Two rules inside that table are easy to undo by accident. **Ambiguity is a question, never
 a pick**: a product with two variants and none named is dropped, the same way
 `devices.straps_for` raises rather than choosing. And **`kind="discount"` never consults
 the backing text** — `compare_at_price` is deliberately unmapped, so no pre-discount number
 can reach the model at all and even a true one has no source in this pipeline.
+
+**Termination is governed by verification, never by the model deciding it is finished.**
+A turn takes `trace.mark()` before it starts, calls `evidence.build(advice,
+trace.since(mark))` before it renders, and presents nothing when `accepted` is False —
+the blocking reasons are what the person is told instead. `bind_sink()` runs **before**
+`asyncio.create_task()`: contextvars are copied at task-creation time, so the reverse
+order routes the turn's verdicts somewhere the bundle cannot see them, and a bundle that
+sees no events accepts nothing.
 
 **Attribute invention is the likeliest way to be embarrassed live.** The agent will
 not invent *products* — retrieval prevents that. It will invent *properties*: `"waterproof
@@ -312,7 +322,8 @@ rendered only from data; prose carries only reasoning.
 | any tool schema | `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
 | `packages/coros_core/ucp.py` (wire shape, error taxonomy, rate-limiting policy) | this facts registry + `tests/test_ucp.py` — the offline half and the `live` probes together |
 | a guardrail | the guardrail table above + `tests/test_guardrails.py` + the trace event name. A check with no row in that table is a check nobody can review |
-| `packages/coros_core/trace.py` (event shape or levels) | every `emit(...)` call site and the guardrail table's trace-event column |
+| `packages/coros_core/trace.py` (event shape or levels) | every `emit(...)` call site, `tests/test_trace.py`, and the guardrail table's trace-event column |
+| `packages/coros_core/evidence.py` (a declared check, a required set, an assumption) | `tests/test_evidence.py` + the guardrail table. A check the bundle requires but nothing emits blocks every recommendation, so the two move together |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md` |
 | a touched-path gate in `infra/jenkins/Jenkinsfile` | `infra/jenkins/Jenkinsfile`; the two apps have separate images |

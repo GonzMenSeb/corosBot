@@ -239,3 +239,46 @@ description, and tampering with a real spec figure — `42mm` to `49mm` — is c
 `emit`, so the ring buffer, `TraceEvent` and `reset()` ship with it. Per-session sink
 binding across `asyncio.create_task()`, the storefront and UCP instrumentation, and the
 evidence bundle are deliberately not here; they arrive with `evidence.py` in this same PR.
+
+### 2026-07-30 · The evidence bundle reads the trace, not the agent
+
+A stage cannot certify itself, so `evidence.build()` takes the advice and the turn's trace
+and nothing else. A check that emitted no event did not run, a recommendation missing a
+required check is `accepted=False`, and the only way to make a check appear is to call the
+function in `guardrails.py` that emits it. That is also how the bundle catches the failure
+that is invisible from inside a prompt: an item the stock check rejected, or a device the
+local-availability check named as not sold in Colombia, appearing in the advice anyway. The
+answer is blocked with the product id in the reason, not softened into a caveat.
+
+Two readings are deliberately not the obvious ones. **An outcome is about the advice
+agreeing with the verdict, not about the verdict being good news** — an over-budget
+selection reported as over budget is a `pass` with the overage carried as a risk, because
+killing the honest bad answer is the failure mode and not the goal. And **silence is not a
+pass**: `scrub_prose` emits only when it excises something, so no `guardrail.prose` event
+means either clean prose or prose nobody scrubbed, and the bundle reports that as an
+untested region rather than resolving it in whichever direction flatters the run. Each
+check declares what it verifies, what it cannot verify, and what confidence it provides
+(KB `Code As Agent Harness.pdf` §5.2.2), and the assumptions carry `held=None` for the ones
+nothing re-derived — "unchecked" is not the same claim as "true" (§5.2.4).
+
+### 2026-07-30 · A trace payload is stored as JSON text
+
+The bundle's verdicts are only evidence if nobody can rewrite them afterwards, and a frozen
+dataclass holding a `dict` is not frozen — the same leak `models.py` documents for a frozen
+model holding a `list`. So a payload is serialised at `emit()` and rebuilt on every read:
+callers cannot reach the record, readers cannot edit it, and a value JSON cannot represent
+is written as its `str()` rather than raising, because an observability layer that can take
+down the run it observes is worse than none. The cost is that an int-keyed payload comes
+back string-keyed; nothing emits one. `dropped()` counts what the bounded ring evicted, and
+the bundle reports the loss — a bounded log is fine, a bounded log that reads as complete is
+not.
+
+### 2026-07-30 · Instrumentation carries counts and names, never the text
+
+`catalog.unavailable` is emitted inside `CatalogUnavailable.__init__` rather than at the six
+raise sites, so a new failure path cannot be added without a trace event. `strip_untrusted`
+emits only when it actually removed an injected segment, and carries how many segments and
+how many characters — not the segment. `call_ucp` records argument NAMES and never values.
+Both for the same reason: an evidence bundle is an artifact a human pastes into a model, so
+a trace that quotes the injection verbatim launders it back into a prompt, and one that
+quotes an argument leaks whatever the argument was.

@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 import pytest
 
-from coros_core import ucp
+from coros_core import trace, ucp
 from coros_core.ucp import EP, PROF, UcpRateLimited, UcpToolError
 
 REPO = Path(__file__).resolve().parent.parent
@@ -303,6 +303,63 @@ class TestARateLimitIsAPauseNotADeadEnd:
     def test_concurrency_is_capped_below_the_burst_that_was_measured_to_trip(self):
         assert ucp.MAX_CONCURRENCY == 8
         assert ucp.SEM._value <= ucp.MAX_CONCURRENCY
+
+
+class TestEveryTripToTheEndpointLeavesATrace:
+    """`evidence.py` treats a `ucp.*` failure event as "this turn's retrieval is not a
+    verified fact". A refusal that emits nothing is a refusal nothing downstream sees."""
+
+    async def test_a_served_call_records_the_tool_and_not_its_arguments(self, transport):
+        transport(_response(200, _ok()))
+
+        await ucp.call_ucp("get_product", {"product_id": PRODUCT_GID, "catalog": {}})
+
+        call = trace.events()[-1]
+        assert call.event == "ucp.call" and call.level == "info"
+        assert call.payload["tool"] == "get_product"
+        assert call.payload["arguments"] == ["catalog", "product_id"], (
+            "argument NAMES only. A cart id, an address or an email travels in the values,\n"
+            "  and an evidence bundle built from these events is pasted into a model."
+        )
+        assert PRODUCT_GID not in json.dumps(call.payload)
+
+    async def test_a_json_rpc_error_is_recorded_with_its_code(self, transport):
+        transport(_response(422, _rpc_error(-32001, "UCP discovery failed")))
+
+        with pytest.raises(UcpToolError):
+            await ucp.call_ucp("search_catalog", {"catalog": {}})
+
+        failures = [e for e in trace.events("error") if e.event == "ucp.tool_error"]
+        assert len(failures) == 1
+        assert failures[0].payload["code"] == -32001
+
+    async def test_a_schema_rejection_on_http_200_is_recorded_too(self, transport):
+        transport(_response(200, _ok("Missing required arguments: catalog", is_error=True)))
+
+        with pytest.raises(UcpToolError):
+            await ucp.call_ucp("search_catalog", {})
+
+        failures = [e for e in trace.events("error") if e.event == "ucp.tool_error"]
+        assert failures and failures[-1].payload["tool"] == "search_catalog"
+        assert not any(e.event == "ucp.call" for e in trace.events()), (
+            "an isError result was recorded as a served call. HTTP 200 is not success here."
+        )
+
+    async def test_both_halves_of_a_rate_limit_are_recorded(self, transport):
+        transport(
+            _response(429, None, **{"Retry-After": "1503"}),
+            _response(429, None, **{"Retry-After": "1499"}),
+        )
+        ucp.PACE_SECONDS = 0.05
+
+        with pytest.raises(UcpRateLimited):
+            await ucp.call_ucp("search_catalog", {"catalog": {}})
+
+        refusals = [e for e in trace.events("error") if e.event == "ucp.rate_limited"]
+        assert [e.payload["retrying"] for e in refusals] == [True, False], (
+            "the latch engaging and the give-up are different facts: one says a retry was\n"
+            "  spaced and served, the other that COROS is refusing a trickle."
+        )
 
 
 def _docstrings(tree: ast.Module) -> set[int]:
