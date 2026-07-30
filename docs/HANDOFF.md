@@ -80,10 +80,14 @@ in size to Brújula's, which took five tasks. `huella/ui/theme.py` is done and i
 measured tokens are the whole brief — read its docstring first. Hard constraints:
 - **Strava attribution is mandatory and unmodifiable**: "Powered by Strava", the official
   "Connect with Strava" button, "View on Strava" links. Never recoloured, animated, or used as
-  the app icon. `theme.STRAVA = "#FC4C02"` is declared on the **light** surfaces only, measured
-  at 3.40:1 on `SHEET`, and there is deliberately no darkened variant.
-- `STRAVA` and `FLAG` are 23.8° of hue apart at 1.24:1 — two dots that close are one dot. The
-  guarantee is that **they never share a surface**, not that they contrast.
+  the app icon. `theme.STRAVA = "#FC5200"` — **corrected in session 28 from `#FC4C02`, which was
+  a memory, not a measurement** — is declared on `SHEET` and on **nothing else**: it measures
+  3.31:1 there and 2.9977:1 on `SHEET_2`, under the graphic floor, and there is deliberately no
+  darkened variant because darkening the asset is what the brand terms forbid. The official
+  marks are vendored byte-identical under `apps/huella/assets/strava/`.
+- `STRAVA` and `FLAG` are 25.6° of hue apart at 1.28:1 — two dots that close are one dot, and
+  **it is the contrast that says so, not the hue**. The guarantee is that **they never share a
+  surface**.
 - Red (`FLAG`) is the uncertainty flag and nothing else.
 - Mirror `tests/test_brujula_ui.py`: walk `Component.render()`, not the component tree —
   `rx.match` renders its cases at construction and a tree walk loses every branch.
