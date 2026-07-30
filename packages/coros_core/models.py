@@ -221,23 +221,29 @@ class Article(BaseModel):
 
 
 class DeviceCase(BaseModel):
-    case_mm: int
+    """`case_mm=None` means COROS states no case size for this device, which is the norm:
+    only the APEX 4 ships in two and only it carries a `Tamaño` option. None is "the
+    vendor never said", not "unknown but guessable"."""
+
     strap_mm: int
+    case_mm: int | None = None
 
 
 class Device(BaseModel):
-    """A curated fact, joined to the live feed by handle. `sold_locally=False` means the
-    Colombian storefront lists straps for this watch but no watch SKU — the distinction
-    the honest-refusal path is built on, and one no feed field expresses."""
+    """A curated fact, joined to the live feed by product id with the handle as a second
+    key — never by `product_type`. `sold_locally=False` means the Colombian storefront
+    lists straps for this watch but no watch SKU: the distinction the honest-refusal path
+    is built on, and one no feed field expresses."""
 
     slug: str
     name: str
     sold_locally: bool
     cases: tuple[DeviceCase, ...] = ()
+    product_ids: tuple[str, ...] = ()
     handles: tuple[str, ...] = ()
     note: str = ""
 
-    def strap_mm_for(self, case_mm: int) -> int | None:
+    def strap_mm_for(self, case_mm: int | None = None) -> int | None:
         return next((c.strap_mm for c in self.cases if c.case_mm == case_mm), None)
 
 

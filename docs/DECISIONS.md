@@ -149,3 +149,36 @@ available embarrassment. `get_products()` excludes them by default — hence 43,
 is explainable without reading the source. A filter that empties the result raises
 `CatalogUnavailable` rather than returning nothing, on the same principle as an empty feed:
 "nothing is available" is an inventory claim, and we do not invent those.
+
+### 2026-07-30 · The device registry is two curated tables, and a width is only ever quoted
+
+`devices.py` could have been three helpers over the feed: split the handle on `mm`, read
+`product_type` for the family, match a strap to a watch when the widths agree. Every one of
+those is wrong against the live catalogue, and each was checked before it was rejected.
+
+`product_type` is empty on the PACE 4 and says `Relojes GPS` on the `coros-dura`, which is a
+bike computer — COROS's own homepage labels that card `alt="Ciclocomputador COROS DURA"`. The
+handle `correa-de-nylon-de-24-mm-morada-para-apex-4-46-copia` belongs to a 22 mm silicone
+strap for the APEX 4 42, and two more handles lie the same way. And COROS sells a 24 mm strap
+whose description reads "solo compatible con el APEX 4 46mm" alongside three 24 mm NOMAD
+straps: equal width, and the vendor states they do not swap. So the file is a hand-authored
+table of 14 devices and 26 strap products, joined to the feed **by product id** with the
+handle as a second key, each row carrying the sentence it was curated from.
+
+Two rules follow from that and are worth more than the table. A **width is recorded only
+where COROS states it in a title or a description** — the PACE 2 and APEX 2 widths exist
+nowhere but in a handle, so those rows carry none and `strap_width()` answers `None` rather
+than 20 mm. And **ambiguity raises**: the APEX 4 is the one device with two cases, they take
+22 mm and 24 mm, and `straps_for("apex-4")` with no case raises `CaseUnspecified` instead of
+returning `()`, which would read as "COROS sells no APEX 4 straps".
+
+The registry does not certify itself. `audit(products)` re-derives every join against the
+live feed and returns the drift as sentences: a product id that vanished, a handle that was
+edited, a case size the feed offers and the table does not, and any unregistered product
+whose title names a device — which is how the day COROS Colombia starts selling the PACE Pro
+becomes a failing test instead of a refusal that is quietly untrue. Zero drift against all 45
+live products on 30 Jul 2026; the `live` half of `tests/test_devices.py` is what keeps it so.
+
+The plan for this module counted six devices as not sold locally. It is ten: the feed also
+carries straps for the PACE 2 and the APEX Pro with no watch SKU, and names the gen-1 APEX
+and VERTIX in the chargers' copy. Corrected in `AGENTS.md` in the same commit as the table.

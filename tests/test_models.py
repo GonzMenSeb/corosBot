@@ -257,6 +257,34 @@ class TestTheDeviceRegistryKnowsWhatIsNotSoldHere:
         assert apex_4.strap_mm_for(46) == 24
         assert apex_4.strap_mm_for(47) is None
 
+    def test_a_watch_with_one_case_states_a_width_and_no_case_size(self) -> None:
+        """COROS states a case size only for the APEX 4, the one device that ships in two.
+        A strap width with `case_mm=None` is the normal row, not a half-filled one."""
+        pace_4 = Device(
+            slug="pace-4",
+            name="COROS PACE 4",
+            sold_locally=True,
+            cases=(DeviceCase(strap_mm=22),),
+        )
+        assert pace_4.strap_mm_for() == 22
+        assert pace_4.strap_mm_for(42) is None
+
+    def test_a_case_needs_a_strap_width_even_when_it_has_no_case_size(self) -> None:
+        with pytest.raises(ValidationError):
+            DeviceCase(case_mm=42)
+
+    def test_a_device_carries_the_product_ids_it_is_joined_by(self) -> None:
+        """Ids first, handles second: Shopify ids are immutable and one live handle
+        describes a different product than its own title does."""
+        nomad = Device(
+            slug="nomad",
+            name="COROS NOMAD",
+            sold_locally=True,
+            product_ids=("7426932899883",),
+            handles=("coros-nomad",),
+        )
+        assert nomad.product_ids == ("7426932899883",)
+
 
 class TestWeCouldNotCheckIsNotTheSameAsThereIsNothing:
     def test_a_timeout_is_not_evidence_of_absence(self) -> None:

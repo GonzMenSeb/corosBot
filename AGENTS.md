@@ -66,12 +66,41 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   `price: "1099000.00"` (**major**, decimal string, COP whole units); UCP `get_product`
   returns `{"amount": 109900000, "currency": "COP"}` (**minor**, integer, centavos).
   `money.py` is the single conversion boundary.
-- **Product types are unreliable for device identification.** PACE 4, APEX 4 (42mm), NOMAD,
-  VERTIX 2, and VERTIX 2S all report empty `product_type`. Device matching uses the
-  hand-authored registry in `devices.py` keyed by product id/handle, **never** by
-  `product_type`.
-- **Strap sizing: 22mm vs 24mm by watch model, 46mm vs 42mm APEX 4 variants.** This must
-  be enforced deterministically in `devices.py`; the model will hallucinate a strap fit.
+- **Product types are unreliable for device identification, and on one product the field
+  is simply wrong.** PACE 4 reports an empty `product_type`, and `coros-dura` reports
+  `Relojes GPS` for something that is not a watch: COROS's own homepage labels that
+  product card `alt="Ciclocomputador COROS DURA"`. Device matching uses the hand-authored
+  registry in `devices.py`, joined by **product id** with the **handle** as a second key,
+  **never** by `product_type`. Enforced by an AST scan in `tests/test_devices.py` — a
+  docstring may name the field, code may not read it.
+- **The DURA takes no strap.** It is a bike computer; no product in the feed lists a strap
+  for it, and the 24 mm straps that exist say "solo compatible con el APEX 4 46mm". A
+  `strap_mm` for it would be invented.
+- **Strap widths, and where each one is written down.** All four verified 30 Jul 2026:
+  PACE 4 → 22 mm, APEX 4 42 mm → 22 mm, APEX 4 46 mm → 24 mm, NOMAD → 24 mm,
+  VERTIX 2/2S → 26 mm. Four live descriptions read "Solo compatible con el APEX 4 42mm,
+  PACE 4, PACE Pro, PACE 3, APEX 2 Pro, APEX Pro … `Ancho: 22 mm`"; two read "Solo
+  compatible con el APEX 4 46mm … `Ancho: 24 mm`"; three NOMAD titles say `24mm`; two
+  VERTIX titles say `26 mm`. Enforced deterministically in `devices.py` — the model will
+  hallucinate a strap fit, and the case size (42/46 mm) is the number it reaches for.
+- **Equal width does not mean interchangeable, and the vendor says so.** COROS sells a
+  24 mm strap "solo compatible con el APEX 4 46mm" and, separately, 24 mm NOMAD straps.
+  Compatibility in `devices.py` is curated per product from COROS's own words; it is never
+  derived from a width, and `StrapFit.strap_mm` exists to be cross-checked, not matched on.
+- **A width that lives only in a handle is not recorded.** The PACE 2 and APEX 2 straps
+  are `20mm-silicone-band` and `20mm-nylon-band` and no title or description states a
+  width, so those two devices carry none. Handles lie here (see the storefront section),
+  so `strap_width()` returning `None` for them is the rule working.
+- **Ten devices are not sold in Colombia, not six.** The plan for `devices.py` listed
+  PACE Pro, PACE 3, APEX 2, APEX 2 Pro, VERTIX 2, VERTIX 2S. The feed also carries straps
+  for **PACE 2** and **APEX Pro** with no watch SKU, and names **APEX** and **VERTIX**
+  (gen 1) in the chargers' own copy ("Compatible con COROS PACE 2/APEX/APEX Pro/VERTIX/
+  VERTIX 2"). All ten are registry rows, because "we do not sell that here" has to be a
+  fact and not a silence. The four that ARE sold: PACE 4, APEX 4, NOMAD, DURA.
+- **"A strap for my APEX 4" is a question, not a request.** It is the only device with two
+  cases and they take different widths, so `strap_width()` and `straps_for()` raise
+  `CaseUnspecified` rather than pick. An empty tuple there would read as "COROS sells no
+  APEX 4 straps", which is false.
 - **Cart lines are `cart.line_items[].item.id`** — not `merchandise_id`, not a bare id.
 - **Responses are double-encoded.** The real body is a JSON *string* inside
   `result.content[0].text` — `json.loads()` it a second time.
@@ -96,11 +125,15 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
 - **`product_type` is empty on 24 of 45 products (53%)**, PACE 4 included. The four values
   in use are `""`, `Accesorios`, `Bandas`, `Relojes GPS`. Carried through normalization and
   never keyed on; `devices.py` is the registry.
-- **A handle is a URL slug, not a description, and one of them lies outright.**
+- **A handle is a URL slug, not a description, and three of them lie outright.**
   `correa-de-nylon-de-24-mm-morada-para-apex-4-46-copia` is a **22 mm white silicone**
   strap for the **APEX 4 42** — title, option label and photo all agree with each other and
   disagree with the handle. Somebody duplicated a product and edited everything but the
-  URL. Nothing derives a spec from a handle; titles and option labels are the sources.
+  URL. Two more from the same afternoon's duplications:
+  `correa-de-nylon-de-24-mm-morada-para-apex-4-42mm` is titled "Correa de nylon de **22
+  mm** morada para Apex 4 42mm", and `correa-nylon-nomad-copia` is "Correa de **Apex 4 -
+  42mm** | Edición Kilian Jornet" and has nothing to do with the NOMAD. Nothing derives a
+  spec from a handle; titles and option labels are the sources.
 - **`sku` is null on 30 of 126 variants** and normalizes to `""` — never the string
   `"None"`. Nothing joins on a sku; it is carried for display.
 - **`"Default Title"` is Shopify's placeholder** for the 10 products with exactly one
@@ -207,7 +240,12 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   minor units happen in that one file. A price `*100` or `/100` anywhere else is a bug
   caught by the test scanner in `tests/test_money.py`.
 - **Nothing matches a device except `devices.py`.** The device registry is deterministic
-  and auditable; a `product_type` field is never used for device identification.
+  and auditable; a `product_type` field is never used for device identification, which an
+  AST scan in `tests/test_devices.py` enforces. Two curated tables — `DEVICES` (14 rows)
+  and `STRAPS` (26 rows) — each row carrying the sentence it was read from, and
+  `audit(products)` re-derives the whole join against the live feed so the registry never
+  self-certifies. Nothing infers a fit from a width, a spec from a handle, or a device
+  from a title outside `resolve()`.
 - **`create_cart` and `create_checkout` are not exposed as model tools.** Human-in-the-loop
   is enforced by *absence* from the tool list, not by a prompt instruction.
 - **Nothing retrieves from the catalog except `catalog.py`, and catalog.py never caches.**
@@ -253,7 +291,7 @@ rendered only from data; prose carries only reasoning.
 | If you change… | You must also update… |
 |---|---|
 | `packages/coros_core/money.py` | `tests/test_money.py` + the price-scaling entry in this facts registry |
-| `packages/coros_core/devices.py` | `tests/test_contracts.py` with a live probe of the storefront + the device-matching entry in this facts registry |
+| `packages/coros_core/devices.py` | `tests/test_devices.py` — the offline half and the `live` audit together — plus the device and strap-width entries in this facts registry. `audit()` is what proves a row still matches the feed; run `make verify` before believing a curated change |
 | `packages/coros_core/catalog.py` | `tests/test_catalog.py` — the offline half and the `live` probes together — plus the storefront section of this facts registry |
 | `packages/coros_core/models.py` | `tests/test_models.py`, and `catalog.py`'s `map_product` if the change touches `CatalogProduct` or `CatalogVariant` |
 | any tool schema | `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
