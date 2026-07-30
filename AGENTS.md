@@ -360,6 +360,38 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   `response_schema` returning a typed `response.parsed` — read DecaBot `AGENTS.md:196-215`.
   **Do not restate them here.**
 
+### The storefront classifies by TLS fingerprint, and calls it a rate limit
+
+Measured 30 Jul 2026, and this is the single most expensive fact in the repo to not know —
+it cost an afternoon and it presents as a rate limit, body and all.
+
+- **`https://coros.com.co/products.json` answers `429 local_rate_limited` to every Python
+  HTTP client, indefinitely, and serves `curl`.** After **30+ minutes of complete silence**
+  from one IP, `requests` as the first request of the window: `429`. In the same window,
+  minutes apart: `httpx` `429`, `curl` `200` (297 399 B), `requests` `429`. A bucket left
+  untouched for half an hour has refilled; this is not a bucket.
+- **It is not the User-Agent, the headers, the HTTP version or connection pooling.**
+  `requests` wearing `curl/8.5.0` → `429`. `requests` sending curl's **exact** header set,
+  with `Accept-Encoding` and `Connection` removed → `429`. `curl` over h2 → `200`;
+  `curl --http1.1` → `200`. Each of those was a separate test and each ruled one thing out.
+- **It is the ClientHello, and impersonating it is the fix.** `curl_cffi` with
+  `impersonate="chrome"` → `200`, 297 399 B. The *same library* with no impersonation →
+  `403` and a 6 924 B Cloudflare challenge page. `requests` and `httpx` behave identically
+  because they share Python's `ssl`-module fingerprint.
+- **`impersonate` is load-bearing and the two failures must stay apart.** `429` is a
+  throttle and sets `rate_limited` on the `catalog.unavailable` event; `403` is a
+  fingerprint problem and must not. Conflating them puts the "COROS refused us" excuse back
+  into `scripts/verify_brujula.py`, which is exactly the bug that suite was written to stop.
+- **Only the storefront is gated. `ucp.py` stays on httpx.** `/api/ucp/mcp` answered `httpx`
+  in the same minutes the feed was refusing it — two different limiters, and the UCP one is
+  not fingerprinting. Do not unify the clients, for a different reason than this registry
+  used to give.
+- The old explanation — "the storefront refuses reused connections" — was a **Decathlon**
+  measurement carried over from DecaBot and never reproduced here. See `docs/DECISIONS.md`,
+  30 Jul, both storefront entries: the first records the measurements and refuses to
+  conclude, the second concludes. Two confident intermediate verdicts were wrong; the
+  measurements were not.
+
 ### Rate limits and pacing
 
 - **No measurable rate limit on COROS UCP yet.** Decathlon's documented 20 sequential / 40

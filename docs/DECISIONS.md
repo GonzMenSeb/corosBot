@@ -874,3 +874,63 @@ a COROS fact: the measurement behind it is Decathlon's, and it is now labelled a
 and untested here. And the 429 handling is vindicated either way — the app refused to turn
 "could not look" into "found nothing", said so in Spanish, and emitted `catalog.unavailable`
 with the status, which is the only reason any of this was visible.
+
+### 2026-07-30 · It is the TLS fingerprint, and `curl_cffi` is the fix
+
+Settled, a few hours after the entry above said it was not. The experiment that entry described
+was run, and then carried further because its first answer was also wrong.
+
+After **30+ minutes of complete silence** from this IP, `requests` as the very first request of
+the window: **429**. That alone kills the token-bucket story — a bucket that has not been
+touched for half an hour has refilled. The script printed "the client is the discriminator —
+`catalog.py` must move off `requests`", and that verdict was wrong too. In the same window,
+minutes apart: `httpx` **429**, `curl` **200** (297 399 B), `requests` **429** again. Both Python
+clients are refused. Moving between them changes nothing.
+
+So what distinguishes `curl` from both? Not the User-Agent: `requests` wearing `curl/8.5.0` is
+refused. Not the headers either, and this is the one that took a specific test — `requests`
+sending curl's **exact** set and nothing else (`Host`, `User-Agent`, `Accept: */*`, with
+`Accept-Encoding` and `Connection` removed) is still refused. Not the HTTP version: `curl` is
+served over h2 and over `--http1.1` alike. Not connection pooling, which was the module's
+original theory and was never a COROS measurement in the first place.
+
+That leaves the TLS handshake, and impersonating it proves it:
+
+| client | result |
+|---|---|
+| `curl_cffi`, `impersonate="chrome"` | **200**, 297 399 B |
+| `curl_cffi`, no impersonation | **403**, 6 924 B Cloudflare challenge |
+| system `curl` | **200**, 297 399 B |
+| `httpx` | **429** |
+| `requests` | **429** |
+| `requests` with curl's exact headers | **429** |
+
+Cloudflare is classifying the ClientHello. Python's `ssl`-module fingerprint — shared by
+`requests` and `httpx`, which is why they behave identically — is answered `429
+local_rate_limited`; a Chrome fingerprint is served. The three different statuses are three
+different verdicts from the same bot-management layer, not three different load conditions, and
+that is why this looked like a rate limit for an entire afternoon: the body really does say
+`local_rate_limited`.
+
+**`curl_cffi` with `impersonate="chrome"` is the fix**, and `impersonate` is load-bearing —
+without it the same library gets a `403` challenge page. The two failures must stay
+distinguishable in code: a `429` is a throttle and sets `rate_limited` on the trace event, a
+`403` is a fingerprint problem and must not, or the verifier's "COROS refused us" excuse comes
+back wearing a disguise.
+
+**Scope, and it is narrower than it looks.** The UCP endpoint `/api/ucp/mcp` is **not**
+fingerprint-gated — it answered `httpx` in the same minutes the storefront was refusing it. So
+`ucp.py` stays on httpx and only `catalog.py` moves. The two really are different limiters, which
+is what the original docstring said for a different reason and got right by accident.
+
+**What this costs, honestly.** A new dependency, and one whose entire purpose is to look like a
+browser to a bot-management layer. Worth saying plainly: this reads a public product feed that
+the storefront serves to any browser, at one request per turn, with a circuit breaker that
+refuses to retry a refusal — the same feed a person gets by opening the URL. It is not a
+scraper and it is not evading a rate limit; the rate limit was never what was refusing us.
+
+**What the earlier entry got right, and should be read as a lesson rather than deleted.** It
+recorded the measurements and refused to publish the conclusion, which is the only reason the
+conclusion could be corrected twice — once from "buckets" to "requests specifically", and again
+from "requests specifically" to "every Python client". Both intermediate verdicts were confident
+and wrong. The measurements were not.

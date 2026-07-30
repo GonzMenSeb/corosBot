@@ -42,6 +42,13 @@ config = rx.Config(
     frontend_port=3000,
     backend_port=8000,
     cors_allowed_origins=ALLOWED_ORIGINS,
+    # Reflex injects a sticky "Built with Reflex" badge into every page unless this is set.
+    # It defaults to None, which `reflex/compiler/compiler.py:1225-1232` resolves to True for
+    # anyone not on a paid Reflex tier, and `_setup_sticky_badge()` then runs. Seen bottom-right
+    # in a Playwright pass on 30 Jul 2026. Third-party branding on a client-facing app is not a
+    # cosmetic issue when the brief is a distinct brand identity, and the field exists to
+    # control it. DecaBot never set it and ships the badge; that is a bug to not inherit.
+    show_built_with_reflex=False,
     # False allows localhost only, and every other host — a tunnel, a staging domain — then
     # gets `403 Blocked request. This host is not allowed.` on a healthy app.
     vite_allowed_hosts=True,

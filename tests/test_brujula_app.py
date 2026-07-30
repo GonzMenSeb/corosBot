@@ -180,6 +180,26 @@ class TestRxconfigCarriesTheFactsThatCostADemo:
             "' https://b.example' silently matches no origin at all."
         )
 
+    def test_no_third_party_badge_is_injected_into_the_page(self) -> None:
+        """`show_built_with_reflex` defaults to None, which the compiler resolves to True for
+        anyone not on a paid Reflex tier — so leaving it unset ships a sticky "Built with
+        Reflex" badge on every page. Found bottom-right in a Playwright pass, 30 Jul 2026."""
+        assert config("brujula").show_built_with_reflex is False, (
+            "show_built_with_reflex is not explicitly False, so Reflex will inject its own\n"
+            "sticky badge into a client-facing page. None is not off — the compiler turns None\n"
+            "into True unless the deploy is on a paid tier."
+        )
+
+    def test_the_app_ships_a_favicon(self) -> None:
+        """A browser requests /favicon.ico unprompted on every page load, and Reflex serves
+        `assets/` at the web root, so an absent file is a 404 in the console of a demo."""
+        icon = rxconfig_path("brujula").parent / "assets" / "favicon.ico"
+        assert icon.is_file(), f"{icon} is missing; every page load logs a 404 for it"
+        assert icon.read_bytes()[:4] == b"\x00\x00\x01\x00", (
+            "assets/favicon.ico is not an ICO. Browsers sniff the bytes, and the extension "
+            "alone will not make a PNG or an SVG work at this path."
+        )
+
     def test_rxconfig_needs_nothing_on_sys_path_but_its_own_directory(self) -> None:
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         done = subprocess.run(
