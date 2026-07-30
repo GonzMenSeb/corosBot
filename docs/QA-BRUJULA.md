@@ -102,3 +102,36 @@ connects. This was reproduced deliberately while trying to serve the container o
   budget), and the trace rail — which is a second, dark register where none of the light tokens
   transfer, so it needs its own contrast pass.
 - Re-run the in-browser contrast walk on each of those states, not just the gate.
+
+---
+
+## 6. Closing §4 and §5 — audited live, 30 Jul 2026
+
+The two sections above recorded that everything behind the gate was unaudited, because there
+was no catalogue to produce cards from and no hosted instance to drive. Both are now false.
+Audited against `https://brujula.web.vespiridion.org` over real TLS.
+
+**The event channel.** `wss://brujula.web.vespiridion.org/_event/?token=…`, no port, 101 —
+read both from Playwright's own `websocket` event and from a `WebSocket` wrapper installed
+before any page script. The bundle bakes `http://localhost:8000`; the compiled client rewrote
+the host and dropped the port on https, exactly as `rxconfig.py`'s comment claims.
+
+**Live data.** `turn.snapshot outcome=ok products=45 visible=43` — 45 less the two
+`gwp-hidden`. `scripts/verify_brujula.py` scores **10/10** against live COROS and Gemini:
+COROS PACE 4 at `$1.099.000`, total equal to the sum of the cards, no unbacked spec claim,
+buy-nothing reachable with zero cards, and a missing API key turning into a reply rather than
+a crash.
+
+**Contrast, both widths, 0 failures.** Re-run with `scripts/contrast_walk.js`, whose WCAG
+implementation is independent of `theme.py`'s helper — the point being that the unit suite
+recomputes with the theme's own function, so a bug in it is invisible there. Worst pair at
+414 is 5.072 against a 4.5 floor.
+
+**One P1, found and fixed.** At 414 the page scrolled sideways by 16 px: `scrollWidth` 415
+against `clientWidth` 399. The audit rail carried `width: 100%` together with
+`margin: 0 1rem 1rem`, and a margin sits outside the width. Huella's rail never had it — at
+mobile it uses a border instead of a floating margin. Fixed to `width: auto` at the three
+mobile breakpoints, redeployed, re-measured at 0 px.
+
+**What §3's standard still excludes.** Reflex's own connection-error toast still fails AA at
+4.35:1 and is still not patched, for the reason given there.
