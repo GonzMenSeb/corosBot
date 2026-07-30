@@ -349,3 +349,66 @@ no model ever sees it. The vendor's denial exists, and retrieval structurally ca
 Diverging from DecaBot, which has no equivalent: its catalogue is wide enough that "nothing
 matched" is nearly always the truth. COROS Colombia sells 45 products, so the gap between "we
 found nothing" and "there is nothing to find" is most of the catalogue.
+
+### 2026-07-30 · Brújula retrieves from a per-turn snapshot, not from a navigable surface
+
+DecaBot's retrieval is navigation: `list_collections` → `get_collection_products`, one storefront
+request per collection, because Decathlon's catalogue is thousands of SKUs and no turn can hold
+it. Brújula's tools are named the same — the ids are frozen in `capability.ToolId` — and do
+something structurally different: they all answer from **one** feed read the turn already paid
+for. Three reasons, in order of how much they cost to ignore.
+
+**The catalogue is 45 products in one request.** `products.json?limit=250` returns all of them,
+no pagination. A second request per group would buy a subset of products we are already holding,
+and buy it from the harshest limiter in this system — measured at ~4 requests before an IP-level
+lockout that outlasts the conversation. During this task's own exploration the storefront locked
+and stayed locked across three spaced probes, so `collections.json` was never verified; building
+`get_collection_products` on an unverified shape would have been the guess this repo does not
+make.
+
+**A search that matches nothing is therefore CONCLUSIVE.** `ToolOutcome.UNAVAILABLE` from
+`search_products` means "we read all 43 and none matched", which is real evidence — exactly what
+`check_buy_nothing(retrieval_conclusive=True)` needs and what a paginated surface can never
+supply. It also flips the honesty problem around: on DecaBot an empty result is usually a partial
+look, here it is usually the truth, and the tool says which.
+
+**No model-facing tool touches UCP.** `search_products` does not call UCP's `search_catalog`,
+and an AST scan in `tests/test_brujula_agent.py` keeps it that way. Two reasons compose: a UCP hit
+that is not in the snapshot cannot pass `check_provenance(candidates, catalog)` — that signature
+only accepts `CatalogProduct` — so a semantic path can only ever re-rank products we already
+have; and `create_cart` lives behind the same client, so a model-facing module able to post to
+`ucp.py` has re-opened the door `WITHHELD` exists to keep shut. UCP stays reachable from a click
+handler, which is the whole human-in-the-loop design: **UCP is the cart surface, and the model
+has no access to it at all.**
+
+Measured while deciding this, and worth writing down because the plan for this task said
+otherwise: `search_catalog` with `pagination.limit = 10` returned 10 products and
+`has_next_page: true`, not the 7-with-`false` the plan recorded. It paginates and it caps, so it
+was never going to be a complete view of a catalogue we can read completely in one request.
+Nothing depends on the number, which is why it is here and not in the facts registry.
+
+### 2026-07-30 · The three catalogue groups come from the device registry, never from the feed's own fields
+
+`list_collections` answers "what does COROS Colombia actually sell" with three groups —
+`relojes` (4), `correas` (26), `accesorios` (13) — and they are a **partition**: every visible
+product lands in exactly one, so nothing is double-counted and nothing is unreachable. A test
+asserts the partition and the three counts.
+
+The obvious taxonomy was `product_type`, and it cannot be used. It is empty on 24 of 45 products
+including the PACE 4, and it says `Relojes GPS` for the DURA, which COROS's own homepage labels
+a *ciclocomputador*. Tags are worse rather than better: `APEX Pro` on a charging cable is a
+compatibility claim, and compatibility has exactly one authority in this repo. Grouping on tags
+would have opened a second, uncurated device-matching path straight through the rule
+`tests/test_devices.py` enforces on `devices.py`. So `relojes` and `correas` are the two curated
+registry tables and `accesorios` is defined as the complement — everything the registry does not
+name — and an AST scan rejects any read of `product_type` or `tags` in `tools.py`.
+
+`list_collections` also takes no `query` parameter, unlike DecaBot's. Three groups do not need
+searching, and a parameter the model can get wrong is a parameter that produces a retry.
+
+Two related calls in the same file. `_slim()` does **not** forward the sanitised `description`:
+it is the injection surface, and 400 characters of marketing copy per product is an invitation to
+read a spec out of prose when the specs that matter — strap widths, compatibility — come from the
+registry with the sentence they were read from. And `lookup_device_compat` answers an APEX 4 with
+no case size by returning the *question* as `NOT_ELIGIBLE`, because an empty strap list there
+would read as "COROS sells no APEX 4 straps", which is false, and picking a case is a guess.

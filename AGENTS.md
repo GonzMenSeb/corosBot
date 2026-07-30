@@ -313,6 +313,22 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   in `capability.WITHHELD` as plain strings so the omission is auditable rather than a
   silence, and a test asserts no `ToolId` carries either value — an id that cannot be
   spelled cannot be offered. `ucp.call_ucp()` can still reach both from a click handler.
+- **UCP is the cart surface, so no model-facing tool may reach it.** `brujula/agent/tools.py`
+  never calls `call_ucp()` or `rpc()`: an AST scan in `tests/test_brujula_agent.py` rejects
+  the attribute. This is why `search_products` is a literal match over the per-turn
+  snapshot rather than a call to UCP's `search_catalog`, and it costs nothing — a UCP hit
+  absent from the snapshot cannot pass `check_provenance(candidates, catalog)` anyway, so a
+  semantic path could only ever re-rank products the turn already holds. See
+  `docs/DECISIONS.md`, 30 Jul 2026.
+- **Brújula's retrieval reads one snapshot; it does not navigate.** All four of its tools
+  answer from the single `products.json` read the turn already paid for, so
+  `list_collections`/`get_collection_products` cost no network and a zero-result
+  `search_products` is **conclusive** — it read all 43. That is what
+  `check_buy_nothing(retrieval_conclusive=True)` rests on, and it is the opposite of
+  DecaBot, where an empty result is usually a partial look. The three groups (`relojes` 4,
+  `correas` 26, `accesorios` 13) are a partition derived from `devices.DEVICES` and
+  `devices.STRAPS` with the remainder as the third; `product_type` and `tags` are banned
+  in `tools.py` by the same kind of AST scan that bans them in `devices.py`.
 - **Every tool name is spelled once, in `capability.ToolId`, and the map is the only
   authority on which one can serve a request.** Both apps' schemas are written against
   those ids; `SURFACES` says which app exposes each. `capable_tools()` returning `()` is
@@ -345,6 +361,10 @@ live feed; an unbacked `"$X COP"` claim is rejected.
 | `catalog.strip_untrusted` | `guardrail.untrusted_text` | an injected segment was removed from vendor free text. Emitted only when something was removed, and it carries counts — never the matched text, which an evidence bundle would paste back into a model |
 | `evidence.build` | `evidence.bundle` | the advice agrees with the verdicts, and every check a recommendation requires actually ran. Derived from the trace, so a stage cannot self-certify; a required check with no event means `accepted=False` |
 | `capability.check_capability` | `guardrail.capability` | a request no tool can serve is a typed `NO_CAPABILITY`, never an empty search that reads as "COROS has nothing". `CapabilityVerdict` cannot be built with no tools and no reason, and `DeadEnd.outcome` is restricted to the escalating outcomes so "out of stock" cannot be dressed as "does not exist" |
+| `tools.lookup_device_compat` | `guardrail.device_compat` | a strap fit is read out of `devices.py`, never derived from a width or a title. Records the slug, the case and the counts — the widths themselves are the registry's to state |
+| `tools.lookup_device_compat` | `guardrail.case_unspecified` | an APEX 4 with no case size gets the **question** back as `NOT_ELIGIBLE`. An empty strap list would read as "COROS sells no APEX 4 straps", and picking a case is a guess |
+| `tools.get_collection_products` | `guardrail.handle_rejected` | an unvalidated group handle is never looked up. The rejection is a tool *answer* carrying the three live names, so the model retries instead of the turn raising. Records the handle's length, never the handle |
+| `tools.get_collection_products` | `guardrail.empty_collection` | a group that is live and carries nothing is `UNAVAILABLE` with a reason, not an empty `OK`. `Snapshot` refuses to be built `OK`-with-no-products at all, so a 429 cannot arrive here disguised as an empty catalogue |
 
 Two rules inside that table are easy to undo by accident. **Ambiguity is a question, never
 a pick**: a product with two variants and none named is dropped, the same way
@@ -397,6 +417,8 @@ rendered only from data; prose carries only reasoning.
 | a guardrail | the guardrail table above + `tests/test_guardrails.py` + the trace event name. A check with no row in that table is a check nobody can review |
 | `packages/coros_core/trace.py` (event shape or levels) | every `emit(...)` call site, `tests/test_trace.py`, and the guardrail table's trace-event column |
 | `packages/coros_core/evidence.py` (a declared check, a required set, an assumption) | `tests/test_evidence.py` + the guardrail table. A check the bundle requires but nothing emits blocks every recommendation, so the two move together |
+| `apps/brujula/brujula/agent/tools.py` (a tool, a group, `_slim`'s whitelist) | `tests/test_brujula_agent.py` + `brujula/agent/prompts.py`, whose stage prompts describe the tools by name + the guardrail table's four `tools.*` rows. A key added to `_slim` is a change to every prompt that renders one |
+| `apps/brujula/brujula/agent/prompts.py` (a stage, a template) | `tests/test_brujula_agent.py` — one test asserts a canned template exists for every non-advice `Intent`, so a new intent without one is a model call spent letting the model improvise a refusal |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md` |
 | a touched-path gate in `infra/jenkins/Jenkinsfile` | `infra/jenkins/Jenkinsfile`; the two apps have separate images |
