@@ -37,40 +37,140 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
 
 - **Endpoint:** `https://coros.com.co/api/ucp/mcp`, `Content-Type: application/json`, no
   auth, no key, no OAuth.
-- **`tools/list` ALWAYS SUCCEEDS here** — unlike Decathlon's broken `tools/list`, COROS's
-  responds with the full tool schema when passed the Shopify public example profile. Do not
-  assume DecaBot's handshake pattern is portable.
-- **Agent profile in `arguments.meta`:** `arguments.meta["ucp-agent"].profile` = Shopify's
-  public example (`https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json`).
+- **Agent profile in `params.arguments.meta`:** `params.arguments.meta["ucp-agent"].profile`
+  = Shopify's public example
+  (`https://shopify.dev/ucp/agent-profiles/examples/2026-04-08/valid-with-capabilities.json`).
   This is a **capability declaration, not a credential** — the server really fetches it, so
-  it must be publicly reachable. `localhost` never works.
+  it must be publicly reachable over https. `localhost` fails "Https required".
+- **EVERY method needs the profile, and only that one placement works.** `initialize`,
+  `tools/list` and `tools/call` all fail `-32001 "UCP discovery failed" / invalid_profile_url`
+  without it. `params.meta`, a top-level `meta`, `profile_uri`, and every HTTP header tried
+  also fail. So `tools/list` is sent with an `arguments` key it has no arguments for — that
+  looks like a bug in `ucp.py` and is the only shape the server accepts.
+- **`initialize` SUCCEEDS here** (`serverInfo.name == "universal-commerce"`), and so does
+  `tools/list` (13 tools). This corrects the earlier reading of this registry and the plan,
+  both of which said `initialize` returns `-32001`: it does so only when the profile is
+  missing, which is also true of every other method. Two real divergences from DecaBot,
+  where both fail unconditionally. Nothing depends on the handshake either way, so
+  `ucp.py` still never calls it — but do not "fix" a passing `initialize`.
+- **JSON-RPC errors arrive with HTTP 422 (bad profile) or 403 (bad tool name).** The body
+  must be read **before** `raise_for_status()`, or COROS's own diagnostics collapse into a
+  bare `httpx.HTTPStatusError`. This is the ordering DecaBot did not need.
+- **`-32000 AuthenticationRequired` means the tool NAME is wrong**, not that a credential is
+  missing. Every real tool — including `create_cart` — answers unauthenticated; a typo'd
+  name is what returns 403 "A valid JWT is required to call `<name>`".
+- **`result.structuredContent` is byte-identical to `json.loads(result.content[0].text)`.**
+  The documented path is `content[0].text`; the duplicate is not a second source of truth
+  and switching to it is a change, not a cleanup.
 - **Prices come in two units, 100× apart:** Storefront feed `products.json` returns
   `price: "1099000.00"` (**major**, decimal string, COP whole units); UCP `get_product`
   returns `{"amount": 109900000, "currency": "COP"}` (**minor**, integer, centavos).
   `money.py` is the single conversion boundary.
-- **Product types are unreliable for device identification.** PACE 4, APEX 4 (42mm), NOMAD,
-  VERTIX 2, and VERTIX 2S all report empty `product_type`. Device matching uses the
-  hand-authored registry in `devices.py` keyed by product id/handle, **never** by
-  `product_type`.
-- **Strap sizing: 22mm vs 24mm by watch model, 46mm vs 42mm APEX 4 variants.** This must
-  be enforced deterministically in `devices.py`; the model will hallucinate a strap fit.
+- **Product types are unreliable for device identification, and on one product the field
+  is simply wrong.** PACE 4 reports an empty `product_type`, and `coros-dura` reports
+  `Relojes GPS` for something that is not a watch: COROS's own homepage labels that
+  product card `alt="Ciclocomputador COROS DURA"`. Device matching uses the hand-authored
+  registry in `devices.py`, joined by **product id** with the **handle** as a second key,
+  **never** by `product_type`. Enforced by an AST scan in `tests/test_devices.py` — a
+  docstring may name the field, code may not read it.
+- **The DURA takes no strap.** It is a bike computer; no product in the feed lists a strap
+  for it, and the 24 mm straps that exist say "solo compatible con el APEX 4 46mm". A
+  `strap_mm` for it would be invented.
+- **Strap widths, and where each one is written down.** All four verified 30 Jul 2026:
+  PACE 4 → 22 mm, APEX 4 42 mm → 22 mm, APEX 4 46 mm → 24 mm, NOMAD → 24 mm,
+  VERTIX 2/2S → 26 mm. Four live descriptions read "Solo compatible con el APEX 4 42mm,
+  PACE 4, PACE Pro, PACE 3, APEX 2 Pro, APEX Pro … `Ancho: 22 mm`"; two read "Solo
+  compatible con el APEX 4 46mm … `Ancho: 24 mm`"; three NOMAD titles say `24mm`; two
+  VERTIX titles say `26 mm`. Enforced deterministically in `devices.py` — the model will
+  hallucinate a strap fit, and the case size (42/46 mm) is the number it reaches for.
+- **Equal width does not mean interchangeable, and the vendor says so.** COROS sells a
+  24 mm strap "solo compatible con el APEX 4 46mm" and, separately, 24 mm NOMAD straps.
+  Compatibility in `devices.py` is curated per product from COROS's own words; it is never
+  derived from a width, and `StrapFit.strap_mm` exists to be cross-checked, not matched on.
+- **A width that lives only in a handle is not recorded.** The PACE 2 and APEX 2 straps
+  are `20mm-silicone-band` and `20mm-nylon-band` and no title or description states a
+  width, so those two devices carry none. Handles lie here (see the storefront section),
+  so `strap_width()` returning `None` for them is the rule working.
+- **Ten devices are not sold in Colombia, not six.** The plan for `devices.py` listed
+  PACE Pro, PACE 3, APEX 2, APEX 2 Pro, VERTIX 2, VERTIX 2S. The feed also carries straps
+  for **PACE 2** and **APEX Pro** with no watch SKU, and names **APEX** and **VERTIX**
+  (gen 1) in the chargers' own copy ("Compatible con COROS PACE 2/APEX/APEX Pro/VERTIX/
+  VERTIX 2"). All ten are registry rows, because "we do not sell that here" has to be a
+  fact and not a silence. The four that ARE sold: PACE 4, APEX 4, NOMAD, DURA.
+- **"A strap for my APEX 4" is a question, not a request.** It is the only device with two
+  cases and they take different widths, so `strap_width()` and `straps_for()` raise
+  `CaseUnspecified` rather than pick. An empty tuple there would read as "COROS sells no
+  APEX 4 straps", which is false.
 - **Cart lines are `cart.line_items[].item.id`** — not `merchandise_id`, not a bare id.
 - **Responses are double-encoded.** The real body is a JSON *string* inside
   `result.content[0].text` — `json.loads()` it a second time.
 - **Schema errors arrive as `result.isError: true` with HTTP 200**, not as JSON-RPC
-  errors. Naive error handling treats a rejected call as success.
+  errors. Naive error handling treats a rejected call as success. The `isError` text is
+  sometimes a bare sentence (`"Missing required arguments: catalog"`) and sometimes a full
+  JSON envelope, so **check the flag before decoding** — decoding first raises on half of
+  them and discards the message on the other half.
+- **Every decoded body carries a `ucp` capability echo of ~4 KB.** `data.pop("ucp", None)`
+  in `ucp.py` strips it; left in, it is the largest thing in the model's context.
 
 ### COROS storefront catalog and retrieval
 
 - **Single page, 45 products.** `GET /products.json?limit=250` returns the complete COROS
-  Colombia catalog in one request, no pagination. Product count verified live 29 Jul 2026.
+  Colombia catalog in one request, no pagination; the only top-level key is `products`.
+  Verified live 29 and 30 Jul 2026.
 - **Retrieval must use `requests` MODULE, not a Session.** Reused connections are refused
   with 429, which cascades to the UCP rate limiter. See DecaBot `AGENTS.md:111-128` for the
   measured evidence; the pattern is identical here. `catalog.py` uses `requests.get()`, not
-  a pooled session.
-- **Sizes arrive phrased the way the customer said them** — `"US 10.5"`, `"men's L"`,
-  `"size 8"` — while feed labels are bare (`"10.5"`, `"L"`). `_clean_request()` strips that
-  noise before matching. Without it, exact in-stock matches fail and the agent substitutes.
+  a pooled session. Enforced by an AST scan in `tests/test_catalog.py` — the docstring is
+  free to explain what a Session is, the code may not construct one.
+- **`product_type` is empty on 24 of 45 products (53%)**, PACE 4 included. The four values
+  in use are `""`, `Accesorios`, `Bandas`, `Relojes GPS`. Carried through normalization and
+  never keyed on; `devices.py` is the registry.
+- **A handle is a URL slug, not a description, and three of them lie outright.**
+  `correa-de-nylon-de-24-mm-morada-para-apex-4-46-copia` is a **22 mm white silicone**
+  strap for the **APEX 4 42** — title, option label and photo all agree with each other and
+  disagree with the handle. Somebody duplicated a product and edited everything but the
+  URL. Two more from the same afternoon's duplications:
+  `correa-de-nylon-de-24-mm-morada-para-apex-4-42mm` is titled "Correa de nylon de **22
+  mm** morada para Apex 4 42mm", and `correa-nylon-nomad-copia` is "Correa de **Apex 4 -
+  42mm** | Edición Kilian Jornet" and has nothing to do with the NOMAD. Nothing derives a
+  spec from a handle; titles and option labels are the sources.
+- **`sku` is null on 30 of 126 variants** and normalizes to `""` — never the string
+  `"None"`. Nothing joins on a sku; it is carried for display.
+- **`"Default Title"` is Shopify's placeholder** for the 10 products with exactly one
+  variant, and `"Title"` the matching option name. Both normalize to `""`: rendered
+  verbatim they read to a shopper as a choice they have to make.
+- **Two products are tagged `gwp-hidden`** — `camisa-blanca-hombre` and
+  `camisa-blanca-mujer`, gift-with-purchase dress shirts, in stock and priced at
+  $120.000. `get_products()` excludes them by default, which is why the usual count is 43
+  and not 45. They are flagged, not dropped, so the discrepancy is explainable.
+- **Variant labels are colour/material/series composites, not sizes.** `Serie / Material
+  de la correa / Color` on PACE 4, `Color / Tamaño` on APEX 4 (where `Tamaño` is the 42 mm
+  or 46 mm case), bare `Color` on 35 of them. This corrects the entry inherited from
+  DecaBot about phrased shoe sizes: COROS sells watches, and the only `Talla` options in
+  the feed belong to the two hidden shirts. `option_names` on `CatalogProduct` is what
+  says which component is which.
+- **`body_html` is not prose.** The largest is 36 160 characters of a **BeeFree email
+  template** (`coros-pod-2`): meta tags, a Google Fonts link, a full stylesheet, then the
+  copy. `coros-apex-4` is 19 981 characters opening with a CSS reset. So the sanitizer
+  must remove the **content** of `style`/`script`/`head`/`noscript`/`svg`/`template`, not
+  just the tags — DecaBot's sanitizer replaces tags with newlines and returns **pure CSS**
+  for both of those products. Fuzzy CSS sniffing is *not* the fix: measured over all 45
+  descriptions and all 30 articles (1 931 segments), precise opaque-element removal leaves
+  zero CSS behind, while a looser sniffer ate 22 segments of real copy (store hours, an
+  Instagram handle, a NIT). `coros-dura` is 2 825 characters of nothing but `<img>` tags
+  and correctly sanitizes to `""` — that is a fact about the feed, not a failed fetch.
+- **Tags are stripped BEFORE unescaping, and that order is load-bearing.** One live
+  article contains `href="&gt;https://support.coros.com/…"`. Unescape first and that
+  `&gt;` becomes a real `>` that ends the tag early, spilling the URL and a
+  `style="color: rgb(255, 255, 255);"` attribute into the copy as if a human wrote it.
+  Roles and tags are re-checked after unescaping, because `&lt;system&gt;` is a role
+  marker too. Injection patterns cover Spanish as well as English: the storefront is
+  Spanish and so is the likeliest attempt.
+- **The blog: `blogs/blog.json` is 404, and `blogs/blog.atom` serves 30 entries and
+  ignores `?page=`.** `?page=2` returns the identical 30 ids. The site really has **58**
+  articles under `/blogs/blog/` — that is `sitemap_blogs_1.xml`, and the 58–60 figure in
+  the plan came from there — but they are not reachable through the feed, so there is no
+  pagination loop to write. A second blog handle `nn` exists with no articles.
 
 ### Strava integration (Huella only)
 
@@ -95,9 +195,30 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   concurrent is a safe working assumption; DecaBot `AGENTS.md:66-81` covers pacing policy.
   COROS has not triggered the same lockout. If it does, apply the same latch-pacing rule
   (Semaphore, never un-latch on success).
-- **Storefront has its own limiter**, separate from UCP. Observed 29 Jul 2026: a burst of
-  6 concurrent reads to `products.json` returned 429 from the storefront even before UCP
-  was touched. Use the unpooled pattern and back off on 429 with a budget.
+- **Storefront has its own limiter**, separate from UCP, and it is the harsher of the two.
+  Measured against `products.json` on 30 Jul 2026:
+  - It tolerates a short burst — **4 requests over ~20 s were served** — then refuses with
+    HTTP **429**, `Retry-After: 60`, Cloudflare, body `local_rate_limited` as `text/plain`.
+  - **The hint is not honest and polling prolongs the lockout.** After one 429, **30
+    consecutive requests spaced 10 s apart were all refused, for five unbroken minutes.**
+    It cleared after ~100 s of *complete quiet*, and a later lockout outlasted 120 s.
+  - So **a 429 is never retried and never polled.** It latches, and every request inside
+    the cooldown fails immediately as a typed `CatalogUnavailable(rate_limited=True)`
+    **without touching the network**. Our own retry is the thing keeping the door shut.
+    Two divergences from DecaBot, which spaces and keeps sending, and retries a 429 to its
+    budget. The latch still **decays** (unlike `ucp.py`'s): the feed is one request per
+    turn, so a permanent latch would end the session over one transient refusal.
+  - Mid-lockout some attempts get **no response at all** — the connection is dropped and
+    `requests` raises `ConnectTimeout`. A network exception is the same condition in
+    different clothes, and is retried only while the latch is open.
+  - **The `User-Agent` is not the discriminator.** A browser UA was served four times in a
+    row and then refused exactly like `python-requests/2.x`; the apparent success was the
+    cooldown expiring. Do not "fix" a 429 by spoofing a header.
+  - Consequence for `make verify` and for demos: **`tests/test_catalog.py`'s live probes
+    skip rather than fail on a lockout**, and two turns inside a minute can legitimately
+    fail to reach the catalog. Whether that is answered with an honest "the storefront is
+    rate-limiting us" or with a retrieval cache is an open decision — see
+    `docs/DECISIONS.md`, 30 Jul 2026.
 
 ### Reflex / frontend and serving
 
@@ -110,11 +231,21 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
 
 ## Module boundaries — enforced socially, and worth it
 
+- **Nothing posts to the UCP endpoint except `ucp.py`.** New MCP tools go through
+  `call_ucp()`; anything that is not a `tools/call` goes through `rpc()`. A second caller
+  brings its own idea of the profile, its own retry policy, and its own share of the rate
+  limit. Caught by an AST scan in `tests/test_ucp.py` — a docstring may *mention* the
+  endpoint, a code path may not name it.
 - **Nothing constructs a price except `money.py`.** All conversions between major and
   minor units happen in that one file. A price `*100` or `/100` anywhere else is a bug
   caught by the test scanner in `tests/test_money.py`.
 - **Nothing matches a device except `devices.py`.** The device registry is deterministic
-  and auditable; a `product_type` field is never used for device identification.
+  and auditable; a `product_type` field is never used for device identification, which an
+  AST scan in `tests/test_devices.py` enforces. Two curated tables — `DEVICES` (14 rows)
+  and `STRAPS` (26 rows) — each row carrying the sentence it was read from, and
+  `audit(products)` re-derives the whole join against the live feed so the registry never
+  self-certifies. Nothing infers a fit from a width, a spec from a handle, or a device
+  from a title outside `resolve()`.
 - **`create_cart` and `create_checkout` are not exposed as model tools.** Human-in-the-loop
   is enforced by *absence* from the tool list, not by a prompt instruction.
 - **Nothing retrieves from the catalog except `catalog.py`, and catalog.py never caches.**
@@ -160,10 +291,11 @@ rendered only from data; prose carries only reasoning.
 | If you change… | You must also update… |
 |---|---|
 | `packages/coros_core/money.py` | `tests/test_money.py` + the price-scaling entry in this facts registry |
-| `packages/coros_core/devices.py` | `tests/test_contracts.py` with a live probe of the storefront + the device-matching entry in this facts registry |
-| `packages/coros_core/catalog.py` | `tests/test_contracts.py` with the product count and the unpooled-retrieval entry |
+| `packages/coros_core/devices.py` | `tests/test_devices.py` — the offline half and the `live` audit together — plus the device and strap-width entries in this facts registry. `audit()` is what proves a row still matches the feed; run `make verify` before believing a curated change |
+| `packages/coros_core/catalog.py` | `tests/test_catalog.py` — the offline half and the `live` probes together — plus the storefront section of this facts registry |
+| `packages/coros_core/models.py` | `tests/test_models.py`, and `catalog.py`'s `map_product` if the change touches `CatalogProduct` or `CatalogVariant` |
 | any tool schema | `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
-| `ucp.py` rate-limiting policy | this facts registry + `tests/test_contracts.py` |
+| `packages/coros_core/ucp.py` (wire shape, error taxonomy, rate-limiting policy) | this facts registry + `tests/test_ucp.py` — the offline half and the `live` probes together |
 | a guardrail | the guardrail table + its test + the trace event |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md` |
