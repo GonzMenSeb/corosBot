@@ -216,8 +216,15 @@ class _Storefront:
 def unlatched(monkeypatch):
     """The latch is process-global. It decays rather than sticking, but 90 s of decay
     inside a test suite is indistinguishable from a hang, so it is reset around every
-    test and the retry ladder is squeezed into something a test can wait out."""
+    test and the retry ladder is squeezed into something a test can wait out.
+
+    `IMPERSONATE` is process-global for the same reason and needs the same treatment: it
+    is PROMOTED when a fallback profile wins, deliberately, so the probe is paid once per
+    process rather than once per turn. Left unreset, the first test that exercises a
+    fallback silently changes which profile every later test sees going out first — which
+    is a test suite whose result depends on its own ordering."""
     catalog.reset_pacing()
+    monkeypatch.setattr(catalog, "IMPERSONATE", catalog.IMPERSONATE_CHAIN[0])
     monkeypatch.setattr(catalog, "BACKOFF_BASE", 0.001)
     monkeypatch.setattr(catalog, "BACKOFF_CAP", 0.004)
     monkeypatch.setattr(catalog, "MIN_INTERVAL", 0.0)
@@ -259,24 +266,45 @@ class TestTheStorefrontClassifiesTheFingerprint:
     async def test_every_request_carries_the_impersonation(self, storefront):
         stub = storefront(_response(200, body=_feed(PACE_4)))
         await catalog.get_products()
-        assert stub.impersonated == [catalog.IMPERSONATE] == ["chrome"], (
+        assert stub.impersonated == [catalog.IMPERSONATE], (
             "a request went out without impersonate=. Plain libcurl gets a 403 Cloudflare\n"
             "  challenge from this storefront, which is a different failure from the 429\n"
             "  `requests` gets — and neither is a throttle."
         )
+        assert catalog.IMPERSONATE == catalog.IMPERSONATE_CHAIN[0], (
+            "the first request did not go out on the head of the chain. IMPERSONATE is the\n"
+            "  profile currently believed good and it starts at the head; a later profile\n"
+            "  is adopted only once it has been measured to work."
+        )
 
-    def test_the_impersonation_target_is_spelled_exactly_once(self):
-        """An AST walk again, so the comment above the constant stays free to quote it."""
+    def test_the_impersonation_targets_are_spelled_exactly_once_each(self):
+        """An AST walk again, so the comment above the constant stays free to quote it.
+
+        The comment block there is a measurement table naming both profiles, and it is
+        prose rather than code — this counts the literals the module ACTS on.
+        """
         tree = ast.parse((REPO / "packages" / "coros_core" / "catalog.py").read_text())
-        literals = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and node.value == "chrome"
-        ]
-        assert len(literals) == 1, (
-            f"the impersonation target is spelled {len(literals)} times. It is load-bearing\n"
-            "  and belongs in catalog.IMPERSONATE alone — a second copy is a second thing\n"
-            "  to forget when a curl_cffi upgrade moves the profile."
+        for profile in catalog.IMPERSONATE_CHAIN:
+            literals = [
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and node.value == profile
+            ]
+            assert len(literals) == 1, (
+                f"{profile!r} is spelled {len(literals)} times in catalog.py. Each profile\n"
+                "  is load-bearing and belongs in IMPERSONATE_CHAIN alone — a second copy is\n"
+                "  a second thing to forget when a curl_cffi upgrade moves the profiles."
+            )
+
+    def test_the_chain_has_a_spare_because_one_profile_cannot_be_tested_where_it_fails(self):
+        assert len(catalog.IMPERSONATE_CHAIN) >= 2, (
+            "IMPERSONATE_CHAIN is down to one profile, which is the shape that already\n"
+            "  failed. Measured 30 Jul 2026: impersonate='chrome' reads 297 399 B from a\n"
+            "  residential IP and gets 429 `local_rate_limited` from the production VPS,\n"
+            "  in the same minute that impersonate='safari' reads the full document from\n"
+            "  that same VPS. A single profile passes every test on a laptop and returns\n"
+            "  zero products in production, because the thing being scored is the pair\n"
+            "  (ClientHello, ASN) and CI never runs from the datacentre."
         )
 
     async def test_closing_is_a_no_op_because_nothing_is_pooled(self):
@@ -533,24 +561,35 @@ class TestAnAbsentAnswerIsNotAnEmptyCatalog:
         assert caught.value.status == 429
         assert caught.value.retry_after == "60", "the hint is reported, for the trace panel"
         assert time.monotonic() - started < 5.0, "and never slept on: it says 60 seconds"
-        assert len(stub.urls) == 1, (
-            "a 429 was retried. A 429 from this storefront is a rejected TLS fingerprint,\n"
-            "  which no retry can change; and where a real limiter WAS measured, 30 requests\n"
-            "  spaced 10 s apart after one 429 were all refused for five unbroken minutes.\n"
-            "  Retrying cannot help and may prolong it, so it latches instead."
+        assert len(stub.urls) == len(catalog.IMPERSONATE_CHAIN), (
+            f"a 429 produced {len(stub.urls)} requests and the chain has "
+            f"{len(catalog.IMPERSONATE_CHAIN)} profiles. A 429 here is a verdict on the\n"
+            "  ClientHello, so retrying the SAME fingerprint cannot change it and is what\n"
+            "  prolongs a real limiter — but trying a DIFFERENT one is a different request,\n"
+            "  and on the production VPS it is the difference between the whole catalogue\n"
+            "  and zero products. So: each profile exactly once, then latch."
+        )
+        assert stub.impersonated == list(catalog.IMPERSONATE_CHAIN), (
+            f"the profiles tried were {stub.impersonated}, not each of\n"
+            f"  {list(catalog.IMPERSONATE_CHAIN)} once. Repeating one is the retry this\n"
+            "  storefront punishes; skipping one is the outage nobody could explain."
         )
 
     async def test_a_request_inside_the_cooldown_never_touches_the_network(self, storefront):
+        # One 429 per profile: every fingerprint has to be refused before the latch closes,
+        # or the latch would be hiding an answer one profile away.
         stub = storefront(
-            _response(429, raw=b"local_rate_limited", **{"Retry-After": "60"}),
+            *[_response(429, raw=b"local_rate_limited", **{"Retry-After": "60"})]
+            * len(catalog.IMPERSONATE_CHAIN),
             _response(200, body=_feed(PACE_4)),
         )
         with pytest.raises(CatalogUnavailable):
             await catalog.get_products()
+        sent_before = len(stub.urls)
         with pytest.raises(CatalogUnavailable) as caught:
             await catalog.get_products()
 
-        assert len(stub.urls) == 1, (
+        assert len(stub.urls) == sent_before, (
             "the second call reached the storefront. While the latch is closed the answer\n"
             "  has to be an immediate typed failure — sending is what extends the outage."
         )
@@ -564,7 +603,10 @@ class TestAnAbsentAnswerIsNotAnEmptyCatalog:
         what `catalog.unavailable` carries into the trace panel and into
         `scripts/verify_brujula.py`, so a reader chasing an outage was being told the
         refusal was older than it was. Cost a debugging cycle on 30 Jul 2026."""
-        storefront(_response(429, raw=b"local_rate_limited", **{"Retry-After": "60"}))
+        storefront(
+            *[_response(429, raw=b"local_rate_limited", **{"Retry-After": "60"})]
+            * len(catalog.IMPERSONATE_CHAIN)
+        )
         with pytest.raises(CatalogUnavailable):
             await catalog.get_products()
         with pytest.raises(CatalogUnavailable) as caught:
@@ -621,11 +663,16 @@ class TestAnAbsentAnswerIsNotAnEmptyCatalog:
             "a 403 latched the cooldown. There is nothing to wait out — waiting cannot\n"
             "  change a ClientHello — and the latch would suppress the next real attempt."
         )
-        assert catalog.IMPERSONATE in caught.value.detail, (
-            "the 403 detail no longer names the impersonation. It is the only place a\n"
-            "  reader learns this was a challenge and not a rate limit."
+        assert all(p in caught.value.detail for p in catalog.IMPERSONATE_CHAIN), (
+            "the 403 detail no longer names the profiles that were rejected. It is the only\n"
+            "  place a reader learns this was a challenge and not a rate limit, and after\n"
+            "  the chain landed it has to say that EVERY fingerprint was refused — not just\n"
+            "  the one that happened to go first."
         )
-        assert len(stub.urls) == 1, "retrying cannot change a fingerprint"
+        assert len(stub.urls) == len(catalog.IMPERSONATE_CHAIN), (
+            "retrying the same fingerprint cannot change it, but trying the next one is a\n"
+            "  different request: each profile exactly once, then give up."
+        )
 
     async def test_a_404_is_not_retried_because_retrying_cannot_help(self, storefront):
         stub = storefront(*[_response(404, body={"errors": "Not Found"})] * 6)
@@ -637,7 +684,7 @@ class TestAnAbsentAnswerIsNotAnEmptyCatalog:
 
     async def test_the_latch_decays_so_one_refusal_does_not_end_the_session(self, storefront):
         stub = storefront(
-            _response(429, raw=b"local_rate_limited"),
+            *[_response(429, raw=b"local_rate_limited")] * len(catalog.IMPERSONATE_CHAIN),
             _response(200, body=_feed(PACE_4)),
         )
         with pytest.raises(CatalogUnavailable):
@@ -650,7 +697,72 @@ class TestAnAbsentAnswerIsNotAnEmptyCatalog:
             "  fires once per demo, this one gates every turn — a permanent latch would end\n"
             "  the session over one transient refusal."
         )
-        assert len(stub.urls) == 2
+        assert len(stub.urls) == len(catalog.IMPERSONATE_CHAIN) + 1, (
+            "the refusal costs one request per profile — each fingerprint is tried once\n"
+            "  before the latch closes — and the post-decay success costs exactly one more."
+        )
+
+    async def test_a_refused_fingerprint_falls_through_to_the_next_one(self, storefront):
+        """The production defect this chain exists for, reproduced offline.
+
+        30 Jul 2026, from inside the running container on the VPS: impersonate='chrome'
+        got 429 `local_rate_limited` and impersonate='safari' got 200 with the whole
+        297 399 B document, from that same IP, in the same minute. Before the chain, the
+        429 latched a 90 s cooldown and Brújula served zero products in production while
+        every offline test and every local container probe passed.
+        """
+        stub = storefront(
+            _response(429, raw=b"local_rate_limited", **{"Retry-After": "60"}),
+            _response(200, body=_feed(PACE_4)),
+        )
+        products = await catalog.get_products()
+
+        assert len(products) == 1, "the fallback profile's answer was thrown away"
+        assert catalog.is_paced() is False, (
+            "a 429 that a later profile answered still latched the cooldown. The latch is\n"
+            "  for a storefront that will not serve us; this one served us one profile down."
+        )
+        assert stub.impersonated == list(catalog.IMPERSONATE_CHAIN[:2]), (
+            f"the second attempt went out as {stub.impersonated[1:]!r} rather than the next\n"
+            "  profile in the chain. Repeating the refused fingerprint is the retry this\n"
+            "  storefront punishes."
+        )
+
+    async def test_the_fallback_is_announced_because_a_silent_one_rots(self, storefront):
+        storefront(
+            _response(429, raw=b"local_rate_limited"),
+            _response(200, body=_feed(PACE_4)),
+        )
+        await catalog.get_products()
+
+        fired = [
+            e for e in trace.events("guardrail") if e.event == "catalog.fingerprint_fallback"
+        ]
+        assert len(fired) == 1, (
+            "a fingerprint fallback happened and left no trace event. The head of the chain\n"
+            "  being dead is exactly the condition nobody notices until the spare dies too,\n"
+            "  because the catalogue keeps answering right up until it does not."
+        )
+        assert fired[0].payload["refused"] == catalog.IMPERSONATE_CHAIN[0]
+        assert fired[0].payload["accepted"] == catalog.IMPERSONATE_CHAIN[1]
+
+    async def test_the_winning_profile_is_kept_so_the_probe_is_paid_once(self, storefront):
+        stub = storefront(
+            _response(429, raw=b"local_rate_limited"),
+            _response(200, body=_feed(PACE_4)),
+            _response(200, body=_feed(PACE_4)),
+        )
+        await catalog.get_products()
+        promoted = catalog.IMPERSONATE
+        await catalog.get_products()
+
+        assert promoted == catalog.IMPERSONATE_CHAIN[1]
+        assert stub.impersonated[-1] == promoted, (
+            "the second turn went back to the dead profile. The probe costs a refused\n"
+            "  request; paying it once per turn instead of once per process turns a\n"
+            "  rotated fingerprint into a permanent tax on the storefront."
+        )
+        assert len(stub.urls) == 3, "the second turn should cost exactly one request"
 
     async def test_a_feed_with_no_products_is_a_broken_feed_not_an_empty_store(
         self, storefront
@@ -728,7 +840,10 @@ class TestTheRetrievalPathLeavesATrace:
     events. A refusal that emits nothing reads downstream as a catalogue that answered."""
 
     async def test_a_refusal_is_recorded_as_an_error_and_names_the_latch(self, storefront):
-        storefront(_response(429, raw=b"local_rate_limited", **{"Retry-After": "60"}))
+        storefront(
+            *[_response(429, raw=b"local_rate_limited", **{"Retry-After": "60"})]
+            * len(catalog.IMPERSONATE_CHAIN)
+        )
 
         with pytest.raises(CatalogUnavailable):
             await catalog.get_products()
@@ -739,7 +854,9 @@ class TestTheRetrievalPathLeavesATrace:
         assert any(e.event == "catalog.unavailable" for e in trace.events("error"))
 
     async def test_a_request_refused_inside_the_cooldown_still_says_so(self, storefront):
-        storefront(_response(429, raw=b"local_rate_limited"))
+        storefront(
+            *[_response(429, raw=b"local_rate_limited")] * len(catalog.IMPERSONATE_CHAIN)
+        )
         with pytest.raises(CatalogUnavailable):
             await catalog.get_products()
         before = len(trace.events())

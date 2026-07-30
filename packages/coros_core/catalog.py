@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import os
 import random
 import re
 import time
@@ -168,15 +169,48 @@ async def aclose() -> None:
 # sometimes dropped with no response at all — so it is retried only while the latch is
 # open.
 
-# Load-bearing, and spelled exactly once. Without it `curl_cffi` sends plain libcurl's
-# fingerprint and Cloudflare answers 403 with a challenge page — a DIFFERENT failure from
-# the 429 that `requests` gets, and the two are worth telling apart when this breaks:
+# Load-bearing, and the two failures are worth telling apart when this breaks:
 #   429  the ClientHello was classified as a bot's (this is what `requests` gets)
 #   403  the ClientHello was libcurl's, i.e. impersonation is off, wrong or out of date
-# Neither is a throttle, and neither is a fact about stock. `"chrome"` is curl_cffi's
-# alias for its newest bundled Chrome profile, which is why the pin in requirements.txt
-# is exact: a curl_cffi upgrade moves this target.
-IMPERSONATE = "chrome"
+# Neither is a throttle, and neither is a fact about stock.
+#
+# THIS IS A CHAIN AND NOT A CONSTANT, because a constant is what broke. Measured 30 Jul
+# 2026 from the production VPS (148.113.172.15, an OVH datacentre IP) against the same
+# storefront, from inside the running container, minutes apart:
+#
+#   | client                            | residential IP | the VPS            |
+#   |-----------------------------------|----------------|--------------------|
+#   | `urllib`, plain Python ssl        | (not measured) | 200, 297 399 B     |
+#   | `curl_cffi`, no impersonation     | 403 challenge  | 403, 6 924 B       |
+#   | `curl_cffi` impersonate="chrome"  | 200, 297 399 B | 429, `local_rate_limited` |
+#   | `curl_cffi` impersonate="safari"  | 200, 297 399 B | 200, 297 399 B     |
+#
+# So the fingerprint that RESCUES us from a residential IP is the one that DAMNS us from a
+# datacentre, and the IP is not blocked at all — two clients from that exact IP read the
+# full 297 399 B in the same minute. Cloudflare is scoring the pair (ClientHello, ASN): a
+# Chrome handshake arriving from a datacentre is less plausible than plain libcurl from
+# one, which is why the better impersonation scores worse there.
+#
+# `"chrome"` alone therefore passed every local test and every container probe on a laptop
+# and still returned zero products in production. A single hardcoded profile cannot be
+# tested where it fails, so the module carries an ordered chain, tries the next profile on
+# 403/429 rather than latching, and emits `catalog.fingerprint_fallback` when a later one
+# wins — a silent downgrade here reads as "the shop is down".
+#
+# The requirements.txt pin stays exact: these are curl_cffi's aliases for its newest
+# bundled profiles, so an upgrade moves every target in this tuple at once.
+IMPERSONATE_CHAIN: tuple[str, ...] = ("safari", "chrome")
+
+# An operator override, so a fingerprint that starts failing on a Friday is one env var and
+# a container recreate rather than a rebuild and a deploy.
+_OVERRIDE = os.environ.get("COROS_IMPERSONATE", "").strip()
+if _OVERRIDE:
+    IMPERSONATE_CHAIN = tuple(p.strip() for p in _OVERRIDE.split(",") if p.strip())
+
+# The profile currently believed good. Starts at the head of the chain and moves only when
+# a later one is measured to work, so the cost of the probe is paid once per process and
+# not once per turn.
+IMPERSONATE = IMPERSONATE_CHAIN[0]
 
 # One in flight at a time. DecaBot allows 6 because it fetches ~24 collection feeds per
 # turn; this module fetches one document, so the only source of a burst is several
@@ -231,18 +265,50 @@ async def _space() -> None:
         _last_start = time.monotonic()
 
 
-async def _send(url: str) -> curl_requests.Response:
+async def _send(url: str, profile: str | None = None) -> curl_requests.Response:
     """`curl_cffi` is synchronous — libcurl in a C extension — and the app is not. This
     is the seam. SEM already bounds it, so the thread pool never grows past that."""
+    chosen = profile or IMPERSONATE
     return await asyncio.to_thread(
-        lambda: client().get(url, timeout=REQUEST_TIMEOUT, impersonate=IMPERSONATE)
+        lambda: client().get(url, timeout=REQUEST_TIMEOUT, impersonate=chosen)
     )
 
 
-async def _fetch(url: str) -> curl_requests.Response:
+async def _fetch(url: str, profile: str | None = None) -> curl_requests.Response:
     async with SEM:
         await _space()
-        return await _send(url)
+        return await _send(url, profile)
+
+
+async def _try_other_fingerprints(url: str, refused: str) -> curl_requests.Response | None:
+    """A 403 or a 429 is a verdict on the ClientHello, not on us or on the shop.
+
+    Retrying the SAME profile cannot change a fingerprint, which is why the caller does not
+    — but trying a different one is a different request, and on the production VPS it is
+    the difference between 297 399 B and zero products. Measured there 30 Jul 2026:
+    `chrome` 429, `safari` 200, same IP, same minute.
+
+    On success this promotes the winner for the rest of the process, so the probe is paid
+    once rather than per turn, and says so in the trace: a fingerprint that quietly fell
+    back is a fingerprint nobody will notice has rotted until both have.
+    """
+    global IMPERSONATE
+    for profile in IMPERSONATE_CHAIN:
+        if profile == refused:
+            continue
+        try:
+            r = await _fetch(url, profile)
+        except CurlError:
+            continue
+        if r.status_code < 400:
+            emit(
+                "catalog.fingerprint_fallback",
+                {"refused": refused, "accepted": profile, "url": url},
+                "guardrail",
+            )
+            IMPERSONATE = profile
+            return r
+    return None
 
 
 def _delay(attempt: int, remaining: float) -> float | None:
@@ -278,11 +344,23 @@ async def _get(url: str, what: str) -> curl_requests.Response:
             if r.status_code < 400:
                 return r
             status, detail = r.status_code, f"HTTP {r.status_code}"
+            if r.status_code in (403, 429):
+                # Both are verdicts on the ClientHello. Before treating either as final,
+                # try the other fingerprints — on the production VPS `chrome` gets 429 and
+                # `safari` gets 200 from the same IP in the same minute, so latching here
+                # would spend 90 s of cooldown on a request that had a working answer one
+                # profile away.
+                other = await _try_other_fingerprints(url, IMPERSONATE)
+                if other is not None:
+                    return other
             if r.status_code == 403:
                 # A challenge page, not a throttle: `rate_limited` stays False and the
                 # cooldown does NOT latch, because there is nothing to wait out. Retrying
                 # cannot change a fingerprint, so this breaks like any other 4xx.
-                detail = f"HTTP 403: Cloudflare challenge — impersonate={IMPERSONATE!r} rejected"
+                detail = (
+                    f"HTTP 403: Cloudflare challenge — every profile in "
+                    f"{list(IMPERSONATE_CHAIN)} rejected"
+                )
                 break
             if r.status_code == 429:
                 retry_after = r.headers.get("Retry-After")
@@ -294,10 +372,11 @@ async def _get(url: str, what: str) -> curl_requests.Response:
                         "url": url,
                         "retry_after": retry_after,
                         "cooldown_s": round(cooldown_remaining()),
+                        "profiles_tried": list(IMPERSONATE_CHAIN),
                     },
                     "error",
                 )
-                break  # retrying is measurably what keeps the limiter shut
+                break  # retrying the same fingerprint is what keeps the limiter shut
             if r.status_code < 500:  # 404 and friends: retrying cannot help either
                 break
 
