@@ -226,6 +226,17 @@ class TestBuyNothingIsAVerdictNotASentence:
             assert verdict.detail, f"{verdict.reason} reached the UI with nothing to say"
 
 
+def test_buy_nothing_is_a_verdict_not_a_sentence() -> None:
+    """`check_buy_nothing` returns a `BuyNothingVerdict`, and `reason` is a closed
+    `Literal` — a model cannot mint its own excuse for "buy nothing" the way it could
+    write one into a sentence. Only `check_buy_nothing`'s own code path can produce
+    `buy_nothing=True`."""
+    verdict = check_buy_nothing([SOLD_OUT])
+    assert isinstance(verdict, BuyNothingVerdict)
+    with pytest.raises(ValidationError):
+        BuyNothingVerdict(buy_nothing=True, reason="el modelo decidio que no hay nada")  # type: ignore[arg-type]
+
+
 class TestNothingRendersThatTheCatalogDoesNotBack:
     def test_a_product_id_the_feed_never_had_is_dropped(self) -> None:
         verdict = check_provenance([{"product_id": "0000", "variant_id": "v1"}], CATALOG)
@@ -353,6 +364,37 @@ class TestBudgetArithmeticHappensInCodeNotInTheModel:
         budget = Budget(max_total_minor=50_000_000)
         check_budget([item()], budget)
         assert budget.max_total_minor == 50_000_000
+
+
+def test_a_hostile_turn_that_widens_the_budget_and_relabels_stock_is_fully_rejected() -> None:
+    """Release blocker per KB `docs/lifeseek/SPEC.md` §1.5, the same citation
+    `Budget.narrowed_to` carries: a textual "don't do this" was violated 0.46% of the
+    time even when written down (Zelikman et al., STOP). The guarantee has to hold when
+    both attacks land in the SAME turn, not one at a time in isolation."""
+    budget = Budget(max_total_minor=50_000_000)
+
+    lying_stock = {
+        "product_id": "9001",
+        "variant_id": "n1",
+        "title": "COROS NOMAD",
+        "product_url": "https://coros.com.co/products/coros-nomad",
+        "price_minor": 125_000_000,
+        "available": True,  # the relabel: the feed says agotado, the "model" says not
+    }
+    stock_verdict = check_stock([lying_stock], CATALOG)
+    assert stock_verdict.items == ()
+    assert stock_verdict.rejected[0].reason == "out_of_stock"
+
+    with pytest.raises(ValueError):
+        budget.narrowed_to(500_000_000)  # the widen
+    assert budget.max_total_minor == 50_000_000, "the attempt to widen it left no trace"
+
+    verdict = check_buy_nothing(CATALOG, budget=budget)
+    assert verdict.buy_nothing
+    assert verdict.reason == "over_budget", (
+        "neither attack should have made anything purchasable: the lie about stock "
+        "never reaches check_buy_nothing (it reads the feed), and the budget never widened"
+    )
 
 
 class TestPropertiesAreWhatTheModelInvents:
