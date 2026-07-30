@@ -411,6 +411,49 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   500 rather than a refusal. `state._digest()` is what gets compared: hex, ASCII, equal
   length, which is what a constant-time comparison wants anyway.
 
+### The OAuth callback route (Huella only)
+
+Measured end to end on **30 Jul 2026** by `scripts/spike_api_transformer.py` — a throwaway
+Reflex app served the way the container serves it (`granian --factory`, `__REFLEX_SKIP_COMPILE`,
+`__REFLEX_MOUNT_FRONTEND_COMPILED_APP=true`, a real `reflex export`), 14 probes, all passing.
+`make spike-oauth` re-runs it; do that whenever the `reflex` pin moves, because every fact
+below is a fact about `App.__call__` and nothing warns you when it changes.
+
+- **A route on the `api_transformer` outranks the compiled frontend's catch-all.** In prod
+  Reflex appends `get_frontend_mount()` — a `Mount` that serves `.web/build/client` and answers
+  *anything* — and that is what would hand Strava a 404. It does not, because the mount goes on
+  `asgi_app.routes`, Reflex's own router, and `App.__call__` then makes that whole router a
+  single `Mount("")` **inside our Starlette**. Starlette matches in list order, so our routes are
+  simply earlier. Probed: `/oauth/strava/callback?code=…` → our 200 with the query string intact,
+  no `code` → our 400 not a static 404, `POST` → 405 (a swallowed path would 404),
+  `/oauth/strava/nope` → 404 (the prefix is not a wildcard), and `/`, `/ping` and `/_event/`
+  (101) all still served.
+- **A route registered *after* `rx.App(...)` still wins.** The mount happens inside
+  `App.__call__`, which granian invokes per worker boot — not at construction — so
+  `api.routes.append(Route(...))` after the `rx.App(...)` line is reachable. Verified live.
+  The inverse is the failure to fear: a route appended after a `Mount("")` on the *same* router
+  is unreachable, and the symptom is a 404 on a route that plainly exists, with nothing in any
+  log. Both halves pinned by `tests/test_contracts.py::TestAnOauthCallbackRouteOutranksTheFrontendMount`.
+- **The `api_transformer`'s own `lifespan=` never runs.** `App.__call__` ends by building
+  `Starlette(lifespan=self._run_lifespan_tasks)` and mounting everything else into *that*, and a
+  mounted ASGI app is never sent a lifespan scope. A `lifespan=` on the transformer is therefore
+  dead code that fails silently — the spike's marker file was never written. Huella's startup
+  work goes through `app.register_lifespan_task`, which is the hook that does fire.
+- **Reflex puts its own CORS policy on our route, and the default mirrors any origin.**
+  `App._add_cors(api_transformer)` runs on the line above the mount, `cors_allowed_origins`
+  defaults to `("*",)`, and `_add_cors` passes `allow_credentials=True` — so under the default
+  config `Origin: https://evil.example` came back as `access-control-allow-origin`, on the
+  callback, with credentials allowed. **`apps/huella/rxconfig.py` must pin
+  `cors_allowed_origins`**; phase 2 of the spike proved the one-line narrowing drops the foreign
+  mirror, keeps ours, and costs nothing — `/ping`, `/` and the websocket upgrade all still serve.
+  Strava's own redirect is unaffected either way: a top-level navigation carries no `Origin`, so
+  CORS never applies to the request that matters. Pinned by
+  `tests/test_contracts.py::TestReflexPutsItsOwnCorsPolicyOnOurRoute`.
+- **The callback still must not answer with a body worth stealing.** CORS is a browser policy,
+  not a server one, and the narrowing above is defence in depth rather than the guarantee. The
+  callback exchanges the code server-side and answers with a redirect and an empty body, so
+  there is nothing for a mirrored origin to read even if the policy regresses.
+
 ## Module boundaries — enforced socially, and worth it
 
 - **Nothing posts to the UCP endpoint except `ucp.py`.** New MCP tools go through
@@ -557,6 +600,7 @@ rendered only from data; prose carries only reasoning.
 | `apps/brujula/brujula/ui/{chat,product,advice,trace_panel,gate}.py` | `tests/test_brujula_ui.py`, which walks the rendered tree of every entry point in that file's `ENTRIES` table — a new one belongs there or nothing checks it. A colour must be a token: a literal fails the scan, and a pair that is not in `theme.TYPE_ON` / `EDGE_ON` has to be added to `theme.py` **with its measured ratio** before it can be used. The rail may not import a light token and no light module may import a `RAIL_*` one. A new `AdviceKind` needs a row in `advice._KINDS`, a new `Confidence` a phrase in `advice._CONFIDENCE_ES`, a new `Outcome` a glyph in `advice._OUTCOME_ICON`. Every `bj-` class a component names must exist in `assets/brujula.css`, with its `prefers-reduced-motion` fallback if it animates. An icon-only control needs an `aria_label`; the bundle's English (`State.blocking`, `CheckRow.detail`) stays on the rail |
 | `apps/brujula/brujula/agent/loop.py` (a stage, a budget, a wire model) | `tests/test_brujula_agent.py` + the guardrail table's `loop.*` rows. A new stage needs a name in `REOPENED` or it re-runs on every resume; a new `response_schema` needs a place in `loop.SCHEMAS` or nothing checks it for the `additionalProperties` 400; a check the bundle can block on needs a Spanish name in `loop._CHECKS_ES` or the person is told a check failed without being told which |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
+| `apps/huella/huella/app.py`'s `api_transformer`, its route list, or the `reflex` pin | `tests/test_contracts.py` (the two OAuth classes) **and** a re-run of `make spike-oauth`. The unit tests pin the mechanism against Reflex's source; only the spike proves the whole shape under granian with a real export, and it is the only thing that would catch the frontend catch-all winning. A new route goes on the transformer *before* nothing in particular — order against Reflex's mount is automatic — but a route added to `asgi_app` instead is unreachable |
 | `rxconfig.py` | `tests/test_brujula_app.py`; recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md`. Every value in that file is load-bearing for a running instance, not a preference |
 | `apps/brujula/brujula/app.py` (a route, the gate branch, the component set) | `tests/test_brujula_app.py`, and `reflex export --frontend-only` in `apps/brujula` followed by re-committing `reflex.lock/` — the lockfile is derived from which components the tree actually uses |
 | a touched-path gate in `infra/jenkins/Jenkinsfile` | `infra/jenkins/Jenkinsfile`; the two apps have separate images |

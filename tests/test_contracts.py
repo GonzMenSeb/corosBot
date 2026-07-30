@@ -9,21 +9,36 @@ one-call-at-a-time discipline `ucp.py` and `catalog.py` already latch to after a
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import contextlib
+import dataclasses
 import json
+from collections.abc import AsyncIterator, MutableMapping
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+import reflex as rx
 from google import genai
 from google.genai import errors, types
+from reflex import app as app_module
+from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
 
 from coros_core import capability, catalog, gemini, ucp
 from coros_core.money import major_string_to_minor
 
 FACTS = 'AGENTS.md "load-bearing facts"'
 REPO = Path(__file__).resolve().parent.parent
+
+# The origin Huella pins `cors_allowed_origins` to. Spelled here because the CORS facts
+# below are about what Reflex does to *our* route, not about Huella's config file.
+HUELLA_ORIGIN = "https://huella.web.vespiridion.org"
 
 # Measured 30 Jul 2026: a lone request is served throughout a storefront lockout and a
 # burst is what trips one. This file never bursts, live or otherwise.
@@ -350,4 +365,251 @@ class TestTheCyclingRangeIsTwoSensorsAndNeitherMeasuresPower:
             f"the POD 2's FAQ now survives truncation. {FACTS} records that it does not, "
             "which is the reason capability.py carries the denial as a typed dead end "
             "instead of trusting retrieval to surface it."
+        )
+
+
+def _asgi(app: Starlette) -> httpx.AsyncClient:
+    """`ASGITransport` has no sync entry — a `httpx.Client` around it raises
+    `AttributeError: '__enter__'` rather than anything about transports."""
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://t")
+
+
+async def _startup(app: Starlette) -> None:
+    """Drives the ASGI lifespan protocol directly. `TestClient` would do it too, but it
+    opens an httpx client on the side — which is both a deprecation warning in this
+    starlette and a second thing that can fail in a test about lifespans."""
+    events = [{"type": "lifespan.startup"}, {"type": "lifespan.shutdown"}]
+    await app({"type": "lifespan", "asgi": {"version": "3.0"}}, lambda: _pop(events), _drop)
+
+
+async def _pop(events: list[dict[str, str]]) -> dict[str, str]:
+    return events.pop(0)
+
+
+async def _drop(_message: MutableMapping[str, Any]) -> None:
+    return None
+
+
+class TestAnOauthCallbackRouteOutranksTheFrontendMount:
+    """Huella's whole OAuth design rests on one line of Reflex: `api_transformer.mount("",
+    asgi_app)`. Reflex's app — event channel, `/ping`, and in production the compiled
+    frontend's catch-all — becomes a `Mount` *inside* our Starlette app, appended after
+    whatever we registered, and Starlette matches in list order. `scripts/
+    spike_api_transformer.py` proved the whole shape under granian on 30 Jul 2026; these
+    pin the two halves that would break it silently."""
+
+    @staticmethod
+    def _app_call() -> ast.FunctionDef:
+        source = Path(app_module.__file__).read_text()
+        cls = next(
+            node
+            for node in ast.parse(source).body
+            if isinstance(node, ast.ClassDef) and node.name == "App"
+        )
+        return next(
+            node
+            for node in cls.body
+            if isinstance(node, ast.FunctionDef) and node.name == "__call__"
+        )
+
+    async def test_a_route_registered_before_the_mount_wins(self) -> None:
+        """The Starlette semantics the design rests on, with no Reflex in the picture."""
+        inner = Starlette(routes=[Route("/{path:path}", lambda _r: PlainTextResponse("inner"))])
+        outer = Starlette(routes=[Route("/oauth/strava/callback", lambda _r: PlainTextResponse("ours"))])
+        outer.mount("", inner)
+
+        async with _asgi(outer) as client:
+            assert (await client.get("/oauth/strava/callback")).text == "ours", (
+                "a route registered before a Mount('') no longer outranks it. Huella's OAuth "
+                f"callback is exactly this shape — see {FACTS} and re-run "
+                "scripts/spike_api_transformer.py before changing huella/app.py."
+            )
+            assert (await client.get("/anything/else")).text == "inner"
+
+    async def test_a_route_registered_after_the_mount_is_unreachable(self) -> None:
+        """Which is why the ordering fact has to be written down: the failure is a 404 on
+        a route that exists, with nothing in any log."""
+        inner = Starlette(routes=[Route("/{path:path}", lambda _r: PlainTextResponse("inner"))])
+        outer = Starlette()
+        outer.mount("", inner)
+        outer.routes.append(Route("/oauth/strava/callback", lambda _r: PlainTextResponse("ours")))
+
+        async with _asgi(outer) as client:
+            assert (await client.get("/oauth/strava/callback")).text == "inner", (
+                "Starlette no longer matches routes in list order. If a route after a "
+                f"Mount('') is now reachable, {FACTS} overstates the constraint."
+            )
+
+    def test_reflex_mounts_its_own_app_into_the_transformer_at_the_empty_path(self) -> None:
+        mounts = [
+            node
+            for node in ast.walk(self._app_call())
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "mount"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "api_transformer"
+        ]
+        assert len(mounts) == 1, (
+            f"App.__call__ no longer mounts Reflex into the api_transformer exactly once "
+            f"(found {len(mounts)}). {FACTS} and huella/app.py both assume it does — re-run "
+            "scripts/spike_api_transformer.py."
+        )
+        first = mounts[0].args[0]
+        assert isinstance(first, ast.Constant) and first.value == "", (
+            f"the mount path is no longer '' (got {ast.dump(first)}). Reflex's app would then "
+            "answer on a prefix, which changes every route Huella serves."
+        )
+
+    def test_the_frontend_mount_goes_on_the_inner_app_not_ours(self) -> None:
+        """`get_frontend_mount()` is appended to `asgi_app.routes` — Reflex's own app,
+        before it becomes our Mount. That is the reason a catch-all static handler cannot
+        precede our callback route: it is never on our router at all."""
+        appends = [
+            node
+            for node in ast.walk(self._app_call())
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "append"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "routes"
+            and isinstance(node.func.value.value, ast.Name)
+            and node.func.value.value.id == "asgi_app"
+        ]
+        assert len(appends) == 1, (
+            "the compiled frontend mount is no longer appended to asgi_app.routes (found "
+            f"{len(appends)}). If it moved onto the api_transformer it would precede our "
+            f"routes and swallow the OAuth callback. {FACTS}; re-run the spike."
+        )
+
+
+class TestTheTransformersOwnLifespanNeverRuns:
+    """`App.__call__` ends with `top_asgi_app = Starlette(lifespan=self._run_lifespan_tasks)`
+    and mounts everything else inside it. A mounted ASGI app receives no lifespan scope, so
+    a `lifespan=` on the api_transformer is dead code — verified under granian 30 Jul 2026.
+    Anything Huella needs at startup goes through `app.register_lifespan_task`."""
+
+    async def test_a_mounted_starlette_app_gets_no_lifespan(self) -> None:
+        ran: list[str] = []
+
+        @contextlib.asynccontextmanager
+        async def inner_lifespan(_app: Starlette) -> AsyncIterator[None]:
+            ran.append("inner")
+            yield
+
+        @contextlib.asynccontextmanager
+        async def outer_lifespan(_app: Starlette) -> AsyncIterator[None]:
+            ran.append("outer")
+            yield
+
+        inner = Starlette(
+            routes=[Route("/oauth/strava/callback", lambda _r: PlainTextResponse("ours"))],
+            lifespan=inner_lifespan,
+        )
+        outer = Starlette(lifespan=outer_lifespan)
+        outer.mount("", inner)
+
+        await _startup(outer)
+        async with _asgi(outer) as client:
+            assert (await client.get("/oauth/strava/callback")).text == "ours"
+
+        assert ran == ["outer"], (
+            f"expected only the outer lifespan to run, got {ran}. 'outer' missing means the "
+            "probe never drove a lifespan and proves nothing; 'inner' present means a mounted "
+            f"Starlette app now runs its own — an api_transformer could then own startup work "
+            f"again, but {FACTS} says it may not, so change both together."
+        )
+
+    def test_reflex_exposes_the_lifespan_hook_that_does_run(self) -> None:
+        assert callable(getattr(app_module.App, "register_lifespan_task", None)), (
+            "App.register_lifespan_task is gone. It is the only startup hook Huella has, "
+            "because the api_transformer's own lifespan never fires."
+        )
+
+
+class TestReflexPutsItsOwnCorsPolicyOnOurRoute:
+    """`App._add_cors(api_transformer)` runs on the same line as the mount, so Reflex's CORS
+    policy covers the OAuth callback — and `cors_allowed_origins` defaults to `("*",)` with
+    `allow_credentials=True`, which mirrors *any* origin back. Measured 30 Jul 2026 under
+    granian: `Origin: https://evil.example` came back as `access-control-allow-origin`.
+    Huella therefore pins `cors_allowed_origins` in `rxconfig.py` and the callback answers
+    with a redirect and an empty body."""
+
+    def test_the_default_is_a_credentialed_wildcard(self) -> None:
+        default = {f.name: f for f in dataclasses.fields(rx.Config)}["cors_allowed_origins"].default
+        assert default == ("*",), (
+            f"cors_allowed_origins no longer defaults to ('*',) (got {default!r}). The reason "
+            f"huella/rxconfig.py pins it may have gone away — check {FACTS} before dropping it."
+        )
+        source = Path(app_module.__file__).read_text()
+        add_cors = next(
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef) and node.name == "_add_cors"
+        )
+        keywords = {
+            kw.arg: kw.value
+            for node in ast.walk(add_cors)
+            if isinstance(node, ast.Call)
+            for kw in node.keywords
+        }
+        credentials = keywords.get("allow_credentials")
+        assert isinstance(credentials, ast.Constant) and credentials.value is True, (
+            "_add_cors no longer sets allow_credentials=True. Combined with the wildcard that "
+            "is what makes the callback readable cross-origin; if it changed, re-measure."
+        )
+
+    async def test_a_credentialed_wildcard_mirrors_any_origin(self) -> None:
+        called: list[str] = []
+
+        async def callback(request: Request) -> PlainTextResponse:
+            called.append(request.query_params.get("code", ""))
+            return PlainTextResponse("ours")
+
+        api = Starlette(routes=[Route("/oauth/strava/callback", callback)])
+        app_module.App._add_cors(api)
+
+        async with _asgi(api) as client:
+            resp = await client.get(
+                "/oauth/strava/callback?code=leaked", headers={"Origin": "https://evil.example"}
+            )
+
+        assert called == ["leaked"], "the handler did not run; the probe proves nothing"
+        assert resp.headers.get("access-control-allow-origin") == "https://evil.example", (
+            "Reflex's CORS policy no longer mirrors a foreign origin onto our routes. That "
+            f"would be good news, and {FACTS} plus huella/rxconfig.py's pinned "
+            "cors_allowed_origins should both be revisited — with a re-measurement, not a guess."
+        )
+        assert resp.headers.get("access-control-allow-credentials") == "true"
+
+    async def test_narrowing_the_config_is_what_stops_it(self) -> None:
+        """Proven end to end by phase 2 of `scripts/spike_api_transformer.py`: the foreign
+        origin loses its mirror, ours keeps it, and Strava's own redirect — a top-level
+        navigation with no `Origin` at all — is untouched."""
+        api = Starlette(
+            routes=[Route("/oauth/strava/callback", lambda _r: PlainTextResponse("ours"))]
+        )
+        api.add_middleware(
+            CORSMiddleware,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            allow_origins=[HUELLA_ORIGIN],
+        )
+
+        async with _asgi(api) as client:
+            foreign = await client.get(
+                "/oauth/strava/callback", headers={"Origin": "https://evil.example"}
+            )
+            ours = await client.get("/oauth/strava/callback", headers={"Origin": HUELLA_ORIGIN})
+            bare = await client.get("/oauth/strava/callback")
+
+        assert "access-control-allow-origin" not in foreign.headers, (
+            "an explicit cors_allowed_origins no longer excludes other origins — then Huella "
+            "has no mitigation and the callback needs a different one."
+        )
+        assert ours.headers.get("access-control-allow-origin") == HUELLA_ORIGIN
+        assert bare.status_code == 200 and bare.text == "ours", (
+            "Strava's redirect carries no Origin header. If CORS now rejects an origin-less "
+            "request the callback is unreachable from Strava itself."
         )

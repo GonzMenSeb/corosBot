@@ -691,3 +691,68 @@ bundle's English put in the checklist, a refusal kind left without a panel, the 
 on a rate limit, an icon-only control left unnamed, `Check.detail` rendered, a Var `class_name` on
 `rx.form`, a rail that ignores the header's height, minor units on a card, prose without its
 quote rule, and a waiting row with no live region.
+
+### 2026-07-30 · The OAuth callback is a route on the api_transformer, proven before it was built
+
+Huella needs one thing Brújula does not: a server-side URL Strava can redirect a browser to.
+Reflex has no route decorator for that, and the shape the docs point at — `rx.App(api_transformer=
+<Starlette>)` — collides with the one thing production does that development does not. With
+`__REFLEX_MOUNT_FRONTEND_COMPILED_APP=true`, Reflex appends a `Mount` that serves
+`.web/build/client` and answers *any* path. If that mount is ahead of our callback, Strava gets a
+404 with a valid `code` in the query string, once, in production, on a URL we cannot re-drive
+without a fresh authorization. Reading `reflex/app.py:747-771` says it works — the frontend mount
+goes on `asgi_app.routes`, Reflex's own router, and that whole router then becomes a single
+`Mount("")` inside our Starlette, which Starlette matches after everything already registered.
+
+Reading was not enough to build on, so `scripts/spike_api_transformer.py` runs it: a throwaway
+Reflex app, a real `reflex export --env prod`, `granian --factory` with both `__REFLEX_*` flags
+set, and fourteen probes. The callback answers with the query string intact; a missing `code`
+gets *our* 400 rather than a static 404; `POST` gets 405, which a swallowed path could not
+produce; a sibling path under the same prefix gets 404, so the win is per-route and not a
+prefix takeover; and `/`, `/ping` and the `/_event/` websocket upgrade all still serve. A route
+appended to the transformer *after* the `rx.App(...)` line also wins, because the mount happens
+inside `App.__call__` at worker boot. `make spike-oauth` re-runs the whole thing; it is slow
+because of the export, so it is not part of `make check`.
+
+Two findings the reading had not predicted, and both changed the design.
+
+**The transformer's own `lifespan=` is dead code.** `App.__call__` ends by constructing
+`Starlette(lifespan=self._run_lifespan_tasks)` and mounting everything else into it, and a mounted
+ASGI app is never handed a lifespan scope. The spike's lifespan wrote a marker file; the marker
+was never written. This is the failure mode that costs the most to find later, because a startup
+hook that silently does not run looks like a bug in whatever depended on it — a token refresher
+that never starts, a client never warmed. Huella's startup work goes through
+`app.register_lifespan_task`.
+
+**Reflex puts its own CORS policy on our route, and the default mirrors any origin.**
+`App._add_cors(api_transformer)` runs on the line above the mount, so this is not something we
+opt into. `cors_allowed_origins` defaults to `("*",)` and `_add_cors` passes
+`allow_credentials=True`; probed under granian, `Origin: https://evil.example` came back as
+`access-control-allow-origin` on the callback itself. So `apps/huella/rxconfig.py` pins
+`cors_allowed_origins`, and phase two of the spike proves the narrowing does what it should: the
+foreign mirror is gone, ours is kept, `/ping` and `/` and the websocket are untouched, and
+Strava's redirect is unaffected because a top-level navigation carries no `Origin` at all and CORS
+never applies to it.
+
+That pin is defence in depth and not the guarantee, which is the reason the callback's *response*
+is the actual mitigation: it exchanges the code server-side and answers with a redirect and an
+empty body. CORS is a policy a browser applies, not one a server enforces, so anything the
+callback returns should be assumed readable. Nothing worth reading is returned.
+
+The unit tests in `tests/test_contracts.py` pin the mechanism rather than re-run the spike: two
+tests establish Starlette's list-order semantics with no Reflex in the picture — including the
+inverse, that a route after a `Mount("")` is unreachable, which is the shape whose symptom is a
+404 on a route that plainly exists — and AST scans over `reflex/app.py` assert the transformer is
+mounted exactly once at `""` and that the frontend mount still goes on `asgi_app`, not on ours.
+Nine mutation probes were run against the new suite: moving the mount to a prefix, deleting it,
+moving the frontend mount onto the transformer, and turning `allow_credentials` off are each
+caught by the test that names them.
+
+`make spike-oauth` and those tests are a deliberate pair, recorded in the maintenance contract.
+The tests are fast and catch a Reflex refactor; only the spike catches the compiled frontend
+winning, because that requires an actual export and an actual server.
+
+The remaining blocker on Huella's OAuth is unchanged and is Sebastian's: a registered Strava app,
+with `https://huella.web.vespiridion.org/oauth/strava/callback` as the redirect URI. The spike is
+deliberately credential-free — its handler echoes the query string instead of exchanging it — so
+the serving question is answered while the registration is still pending.
