@@ -13,8 +13,11 @@ actually ships: a `css:({…})` string with the declarations a browser will appl
 
 The walk resolves a surface the way a browser does. A node's own `background` replaces what it
 inherited; a `_hover` or `_focus_within` background is a surface too, so a colour on that node
-has to clear both. A gradient or an `rgba()` resolves to no token, and the pair checks below it
-are skipped rather than guessed at.
+has to clear both. A translucent fill composites rather than replaces — `transparent`, and
+every `theme.LEVEL_BG` tint — so the declared surface behind it stays the one of record.
+Anything else that names no `theme.SURFACES` token resolves to `UNDECLARED`, and every pair
+below it fails. Skipping such a subtree is what this walk used to do, and it is how the entire
+audit rail sat unchecked behind one `rgba()` background.
 
 A border is measured against what is BEHIND it, not against the fill it encloses: an edge
 separates a box from the page. A border painted in the enclosing surface's own colour is a
@@ -40,7 +43,6 @@ already shipped a suite that passed with five of its seven gates deleted.
 from __future__ import annotations
 
 import ast
-import json
 import pathlib
 import re
 from collections.abc import Iterator
@@ -82,6 +84,14 @@ _EDGE_PROP = "border"
 _SURFACE_PROP = ("background", "backgroundColor")
 
 _WORDS = ("Text", "Heading", "Link", "Button", "TextField")
+
+# A fill that lets what is behind it through, and therefore does not replace the surface.
+_TRANSLUCENT = re.compile(r"\btransparent\b|\brgba\(|\bhsla\(")
+# The surface a colour was painted on when the background it sat on resolves to no
+# theme.SURFACES token. It is in no TYPE_ON or EDGE_ON tuple on purpose: an undeclared
+# surface is one nobody measured a ratio against, and it has to read as a failure rather
+# than as an absence.
+UNDECLARED = "an undeclared surface"
 
 
 def source(module: str) -> str:
@@ -151,21 +161,30 @@ def nodes(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
 
 
 def surfaces_of(node: dict[str, Any], inherited: frozenset[str]) -> frozenset[str]:
+    """The surface(s) a colour on this node is read against.
+
+    A background naming a `theme.SURFACES` token resolves to it. A translucent one composites
+    over what is behind rather than replacing it — `transparent` is a no-op and LEVEL_BG's
+    tints are 12% washes — so the inherited surface stays the one of record. Anything else
+    resolves to `UNDECLARED`, which appears in no TYPE_ON or EDGE_ON tuple and so fails every
+    pair beneath it.
+
+    Returning the empty set for the third case is the bug this replaces: `visit` yields
+    nothing for a node with no surface, so one unresolvable background silently exempted its
+    whole subtree — and `trace_panel.row()` sets `background=_level_bg(...)`, which put the
+    entire audit rail behind exactly that hole.
+    """
     own: set[str] = set()
     pseudo: set[str] = set()
-    opaque = False
     for prop, value, depth in decls(node):
         if prop not in _SURFACE_PROP:
             continue
         found = {name for name in tokens(value) if name in theme.SURFACES}
-        if depth == 1:
-            opaque = True
-            own |= found
-        else:
-            pseudo |= found
-    if opaque and not own:
-        # A gradient, or an rgba fill: something is behind the words and it is not a token.
-        return frozenset(pseudo)
+        if _TRANSLUCENT.search(value):
+            found |= inherited
+        elif not found:
+            found = {UNDECLARED}
+        (own if depth == 1 else pseudo).update(found)
     return frozenset((own or inherited) | pseudo)
 
 
@@ -215,8 +234,8 @@ def props_of(node: dict[str, Any]) -> Iterator[tuple[str, list[str]]]:
 _SCALARS = ("contents", "iterable", "cond_state", "cond")
 
 
-def flat(component: rx.Component) -> str:
-    """The rendered tree as one searchable string, unescaped.
+def flat_node(root: dict[str, Any]) -> str:
+    """One rendered subtree as one searchable string, unescaped.
 
     `json.dumps` would be shorter and is wrong: it escapes every `"` in `role:"log"`, so a
     test looking for the prop it can see in the source never matches it here. Reflex escapes
@@ -224,11 +243,31 @@ def flat(component: rx.Component) -> str:
     here, because the whole interface is in Spanish and every second label carries an accent.
     """
     out: list[str] = []
-    for node in nodes(component.render()):
+    for node in nodes(root):
         out.append(str(node.get("name") or ""))
         out += [p for p in (node.get("props") or ()) if isinstance(p, str)]
         out += [str(node[key]) for key in _SCALARS if key in node]
     return _ESCAPED.sub(lambda hit: chr(int(hit.group(1), 16)), "  ".join(out))
+
+
+def flat(component: rx.Component) -> str:
+    return flat_node(component.render())
+
+
+def arms(component: rx.Component) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The two branches of a component's outermost `rx.cond`, as separate rendered subtrees.
+
+    `flat()` over a whole render holds both arms at once, because `rx.cond` renders its cases
+    at construction time. Any prop one arm carries therefore satisfies an assertion aimed at
+    the other — and `trace_panel.panel()`'s two arms both carry `aria-controls`, one on the
+    expanded rail's close button and one on the collapsed pill, which is how deleting it from
+    the pill went unnoticed.
+    """
+    for node in nodes(component.render()):
+        yes, no = node.get("true_value"), node.get("false_value")
+        if isinstance(yes, dict) and isinstance(no, dict):
+            return yes, no
+    raise AssertionError("that component renders no rx.cond to take a branch of.")
 
 
 def imported(module: str) -> set[str]:
@@ -327,21 +366,77 @@ def declarations(body: str) -> list[tuple[str, str]]:
     return out
 
 
+_TIME = re.compile(r"(\d*\.?\d+)\s*(ms|s)\b")
+# Nothing under this has moved as far as a person is concerned. The shortest thing the
+# reduced-motion block below genuinely keeps is 90ms and the blanket it exists to refuse is
+# 0.001ms, so the floor sits in the empty gap between the two.
+PERCEPTIBLE = 0.05
+
+
+def seconds(value: str) -> list[float]:
+    return [float(count) * (0.001 if unit == "ms" else 1.0) for count, unit in _TIME.findall(value)]
+
+
+def switches_motion_off(prop: str, value: str) -> bool:
+    """Whether one declaration cancels an animation rather than putting something in its place.
+
+    It cannot simply reject the whole `animation-*` family, because a real alternative is
+    still an animation: the kit's substitute is `animation: hu-kit-resolve 300ms`, which
+    resolves instead of travelling and is exactly what this block is for. What it rejects is
+    the two forms of the off switch — `animation: none`, and a duration nobody can perceive.
+    `animation-duration: 0.001ms !important` is the second one, and it is the blanket the
+    stylesheet's own comment names as the thing it was written to avoid.
+    """
+    if not prop.startswith("animation"):
+        return False
+    if "none" in value.replace("!important", "").split():
+        return True
+    found = seconds(value)
+    if prop == "animation-duration":
+        return bool(found) and min(found) < PERCEPTIBLE
+    if prop == "animation":
+        # In the shorthand the first <time> is the duration; a second one is the delay.
+        return bool(found) and found[0] < PERCEPTIBLE
+    return False
+
+
+def flatten(text: str, reduced: bool = False) -> Iterator[tuple[str, str, bool]]:
+    """`(selector, body, is it under prefers-reduced-motion)` for every rule, at-rules opened.
+
+    `rules()` stops at the top level, so a rule nested in an `@media` block used to be
+    invisible to every scan below — an animation could arrive inside one and the parametrised
+    reduced-motion check would have nothing to say about it, because the class it animates was
+    never discovered. `@keyframes` is the one at-rule not opened: its `from` and `50%` steps
+    are not selectors, and reading them as rules is what brace depth already exists to avoid.
+    """
+    for selector, body in rules(text):
+        if selector.startswith("@keyframes"):
+            continue
+        if selector.startswith("@"):
+            yield from flatten(body, reduced or "prefers-reduced-motion" in selector)
+        else:
+            yield selector, body, reduced
+
+
 CSS = _COMMENT.sub(" ", STYLESHEET.read_text(encoding="utf-8"))
-TOP_RULES = rules(CSS)
-REDUCED = [body for selector, body in TOP_RULES if "prefers-reduced-motion" in selector]
-DEFINED_CLASSES = {hit for selector, _ in TOP_RULES for hit in re.findall(r"\.(hu-[a-z0-9-]+)", selector)}
+ALL_RULES = list(flatten(CSS))
+REDUCED_RULES = [(selector, body) for selector, body, reduced in ALL_RULES if reduced]
+DEFINED_CLASSES = {
+    hit for selector, _, _ in ALL_RULES for hit in re.findall(r"\.(hu-[a-z0-9-]+)", selector)
+}
 
 
 def animated() -> tuple[str, ...]:
     """Every `hu-` class the stylesheet animates outside the reduced-motion block.
 
     Derived rather than typed, so a fourth animation cannot arrive without an alternative:
-    the parametrised test below is what would then have nothing to say about it.
+    the parametrised test below is what would then have nothing to say about it. Media blocks
+    are walked into for the same reason — a breakpoint is not a place motion stops needing an
+    answer under `prefers-reduced-motion`.
     """
     found: set[str] = set()
-    for selector, body in TOP_RULES:
-        if selector.startswith("@") or "prefers-reduced-motion" in selector:
+    for selector, body, reduced in ALL_RULES:
+        if reduced:
             continue
         if not any(prop.startswith("animation") for prop, _ in declarations(body)):
             continue
@@ -402,7 +497,9 @@ class TestNothingReadsAsWordsOnASurfaceNobodyMeasuredItOn:
             "edges), and tests/test_huella_theme.py recomputes the ratio for each one. Use a\n"
             "declared pair, or add the pair to theme.py with its measurement — and remember\n"
             "the two registers do not share: an instrument token on a sheet is unreadable and\n"
-            "so is a sheet token on a row."
+            f"so is a sheet token on a row. '{UNDECLARED}' means the background under this\n"
+            "colour names no theme.SURFACES token at all: declare it there, or make it a\n"
+            "translucent fill so the surface behind it is what the colour is measured on."
         )
 
     @pytest.mark.parametrize("label", sorted(ENTRIES))
@@ -424,7 +521,9 @@ class TestNothingReadsAsWordsOnASurfaceNobodyMeasuredItOn:
             + "\n".join(sorted(set(bad)))
             + "\nAn edge is measured against the surface BEHIND it. theme.EDGE_ON declares the\n"
             "pairs that clear 3:1; GRID and AXIS are the decorative hairlines, and a border in\n"
-            "the enclosing surface's own colour is a cutout, not an edge."
+            f"the enclosing surface's own colour is a cutout, not an edge. '{UNDECLARED}' means\n"
+            "the background behind this edge names no theme.SURFACES token, so there is\n"
+            "nothing for the edge to be measured against."
         )
 
 
@@ -617,16 +716,36 @@ class TestACardCarriesOnlyWhatTheCatalogueSaid:
         )
 
     def test_the_only_prose_on_the_card_is_marked_as_prose(self) -> None:
-        quoted = [
+        """The rule has to be on the element that renders the sentence, not on an ancestor.
+
+        Serialising a node's whole subtree and looking for `rationale` in it matches the card
+        itself, which carries a `border` and a `borderRadius` of its own — and `borderRadius`
+        starts with `border`. Both of those made the rule look present with the rule deleted.
+        So: the node whose OWN text is the rationale, and `borderLeft` spelled out.
+        """
+        rendered = advice.card(State.cards[0]).render()
+        prose = [
             node
-            for node in nodes(advice.card(State.cards[0]).render())
-            if "rationale" in json.dumps(node.get("children"), default=str)
-            and any(prop.startswith("border") for prop, _, _ in decls(node))
+            for node in nodes(rendered)
+            if any(
+                "rationale" in str(child.get("contents") or "")
+                for child in (node.get("children") or ())
+                if isinstance(child, dict)
+            )
         ]
-        assert quoted, (
-            "the rationale is rendered without the quote rule down its left edge.\n"
+        assert len(prose) == 1, (
+            f"{len(prose)} nodes render item.rationale as their own text.\n"
+            "It is one sentence in one place; a walk that finds none has lost it and a walk\n"
+            "that finds several has nothing left to pin the quote rule to."
+        )
+        ruled = [value.strip() for prop, value, _ in decls(prose[0]) if prop == "borderLeft"]
+        assert ruled and _HEX.search(ruled[0]), (
+            f"the rationale renders with {sorted(prop for prop, _, _ in decls(prose[0]))} and\n"
+            "no coloured borderLeft among them — the quote rule down its left edge is gone.\n"
             "Every other value on the card came off COROS's feed; that one is Huella's own\n"
-            "sentence, and the rule is what says so without a caption."
+            "sentence, and the rule is what says so without a caption. The card's own border\n"
+            "and border-radius are not it: they enclose everything, so they distinguish\n"
+            "nothing."
         )
 
     def test_a_product_with_no_photo_still_gets_a_card(self) -> None:
@@ -729,10 +848,20 @@ class TestTheWholeInterfaceIsOperableWithoutAMouse:
         )
 
     def test_the_collapsed_rail_says_what_it_will_open(self) -> None:
-        assert f'"aria-controls":"{trace_panel.RAIL_ID}"' in flat(trace_panel.panel()), (
+        _, pill = arms(trace_panel.panel())
+        rendered = flat_node(pill)
+        assert '"aria-expanded":"false"' in rendered, (
+            "the false branch of trace_panel.panel() is not the collapsed pill.\n"
+            "This test takes one arm of the rail's rx.cond rather than the whole render, and\n"
+            "aria-expanded is what tells the two apart. If the branches have swapped, the\n"
+            "assertion below is aimed at the wrong one."
+        )
+        assert f'"aria-controls":"{trace_panel.RAIL_ID}"' in rendered, (
             "the pill that reopens the rail does not name what it controls.\n"
             "aria-controls is what tells a screen reader the button and the panel are the\n"
-            "same thing; the panel carries that id."
+            "same thing; the panel carries that id. The expanded rail's close button declares\n"
+            "the same attribute, so asserting it against the whole render is a check the\n"
+            "collapsed pill can fail on its own without anything going red."
         )
 
     def test_a_status_glyph_carries_its_word_for_a_reader_that_cannot_see_it(self) -> None:
@@ -808,11 +937,19 @@ class TestEveryClassNamedHereIsARuleTheStylesheetHas:
 
     @pytest.mark.parametrize("name", ANIMATED)
     def test_each_animation_has_a_reduced_motion_alternative_not_an_off_switch(self, name: str) -> None:
+        """A contract between the two halves of assets/huella.css, and for one class that is all.
+
+        `hu-shake` is applied by nothing in the app. Neither branch of the page renders it —
+        `app._gate()`'s error arm is a plain `rx.text(..., role="alert")` with no class on the
+        card — so that parameter checks a pair of rules no browser ever reaches, and it is not
+        evidence that the gate's refusal has a still alternative on screen. It has no motion on
+        screen to replace. The rule stays because deleting it would cost the reduced-motion
+        block an entry the moment the class is wired up, and because ANIMATED is derived from
+        the stylesheet rather than typed. `hu-kit` and `hu-pulse` are the two that are really
+        applied — `advice.kit()` and `brand.PULSE_CLASS` — and those two are real coverage.
+        """
         replacements = [
-            (selector, body)
-            for block in REDUCED
-            for selector, body in rules(block)
-            if not selector.startswith("@") and f".{name}" in selector
+            (selector, body) for selector, body in REDUCED_RULES if f".{name}" in selector
         ]
         assert replacements, (
             f".{name} animates and the prefers-reduced-motion block never mentions it.\n"
@@ -822,12 +959,15 @@ class TestEveryClassNamedHereIsARuleTheStylesheetHas:
             f"{prop}: {value}"
             for _, body in replacements
             for prop, value in declarations(body)
-            if not prop.startswith("animation") or value != "none"
+            if not switches_motion_off(prop, value)
         ]
         assert kept, (
             f"under prefers-reduced-motion, .{name} is switched off and nothing takes its\n"
             "place:\n  " + "\n  ".join(f"{s} {{{' '.join(b.split())}}}" for s, b in replacements) + "\n"
-            "That is the blanket `animation: none` this stylesheet was written to avoid. The\n"
+            "That is the blanket this stylesheet was written to avoid, in one of its two\n"
+            "spellings: `animation: none` with nothing after it, or a duration nobody can\n"
+            f"perceive — `animation-duration: 0.001ms !important` is under the {PERCEPTIBLE}s\n"
+            "floor and is the exact declaration the stylesheet's own comment refuses. The\n"
             "'working' pulse becomes a held ring, the kit resolves instead of travelling and\n"
             "the gate's refusal becomes a held flag outline — every one of them keeps its\n"
             "meaning and drops its movement. An off switch tells an athlete waiting on a turn\n"

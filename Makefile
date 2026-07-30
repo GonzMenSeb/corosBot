@@ -50,3 +50,11 @@ dev-huella:
 clean:
 	rm -rf apps/*/.states .pytest_cache .playwright-mcp .reflex-*.log
 	find . -path ./.venv -prune -o -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+
+# Agent vs. retrieval-only baseline, offline over fixtures/products.json. Exits non-zero
+# when the baseline wins a metric or the two arms did not spend the same budget. The same
+# harness runs inside `make check` via tests/test_eval_baseline.py; this is the readable
+# report. See docs/EVAL.md.
+.PHONY: eval
+eval:
+	$(PY) scripts/eval_baseline.py $(ARGS)

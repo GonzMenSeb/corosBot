@@ -433,16 +433,51 @@ Neither is a hex, so neither appears in the registries; both are hairlines by co
 and neither may be used where a boundary has to be seen. Composited over the surfaces they
 are drawn on, they measure:
 
-| Token | Over | Composites to | Ratio |
-|---|---|---|---|
-| GRID `rgba(238,243,247,0.09)` | DASH | `#20252A` | 1.23:1 |
-| GRID | INK | `#293038` | 1.27:1 |
-| GRID | INK_2 | `#323A45` | 1.30:1 |
-| SHEET_LINE `rgba(22,29,37,0.10)` | SHEET | `#E8E8E9` | 1.22:1 |
-| SHEET_LINE | SHEET_2 | `#DBDEE2` | 1.22:1 |
+| Token | Over | Composites to | Ratio | Chrome paints | Ratio |
+|---|---|---|---|---|---|
+| GRID `rgba(238,243,247,0.09)` | DASH | `#20252A` | 1.23:1 | `#1F252A` | 1.22:1 |
+| GRID | INK | `#293038` | 1.27:1 | `#293037` | 1.27:1 |
+| GRID | INK_2 | `#323A45` | 1.30:1 | `#313A44` | 1.29:1 |
+| SHEET_LINE `rgba(22,29,37,0.10)` | SHEET | `#E8E8E9` | 1.22:1 | `#E7E8E9` | 1.23:1 |
+| SHEET_LINE | SHEET_2 | `#DBDEE2` † | 1.22:1 | `#DADEE1` | 1.23:1 |
 
 `GRID` is alpha over the readout on purpose, so a hairline sits in its own surface's hue
 rather than being a fourth grey that has to be maintained per surface.
+
+**† That row is a rounding tie, and it is the only one in the table.** `SHEET_LINE` over
+`SHEET_2` gives `22·0.10 + 241·0.90 = 219.1` red and `37·0.10 + 247·0.90 = 226.0` blue,
+both unambiguous — but green is `29·0.10 + 244·0.90 = 222.5` **exactly**, which is a
+half-integer and therefore a value the rounding mode decides. Half-to-even gives 222
+(`#DBDEE2`); half-up gives 223 (`#DBDFE2`). **222 is the one written here, and the reason is
+not a preference between rounding modes — it is that the engine never evaluates that
+expression.** Measured 30 Jul 2026 by rendering the five pairs as nested `<div>`s and reading
+the rasterised pixels back out of a `--screenshot` PNG, on two independent Chromium builds
+(Chrome 150.0.7871.186 and Chrome for Testing 147.0.7727.15, both `--force-color-profile=srgb`,
+both agreeing to the byte, no dithering — one distinct colour per block): **Chromium quantises
+the CSS alpha to 8 bits before it composites.** `0.10` becomes `26/255`, so the green channel
+is `(29·26 + 244·229) / 255 = 222.078` — not a tie at all — and it paints **222**. Half-up's
+223 is not a value that pipeline can produce here. Gecko and WebKit were not measurable
+offline, so read this as Chromium's answer, which is also Playwright's and therefore §9's.
+
+That measurement also says the "Composites to" column is **ideal arithmetic, not paint**. The
+engine premultiplies the source with a rounding multiply, scales the destination by
+`(255 − α₈) + 1` and shifts right 8 — a truncation — so **every one of the five rows lands one
+unit low on one or two channels**, as the last two columns show. Reproducing all fifteen
+measured channels to the byte is what identifies the pipeline; treat the ideal column as the
+specification and the measured column as what a screenshot audit will actually find. **A
+contrast audit that samples pixels — `scripts/contrast_walk.js` composites in paint order,
+deliberately — is reading the right-hand pair.** Nothing here is near a floor: every row is a
+hairline at about 1.2:1 either way, which is the whole point of the two tokens, so the
+discrepancy costs nothing today. It would cost something the first time somebody moved an
+alpha token toward a threshold.
+
+**Nothing enforces this table.** `theme.py` states no composite figure — `GRID` and
+`SHEET_LINE` are declared as `rgba(...)` strings and nothing else — and
+`tests/test_huella_theme.py` recomputes only the `X on Y N.NN:1` ratios written in *that
+file's* prose, from the two opaque tokens each names; it reads no markdown and composites
+nothing. So unlike every other figure in §4, **these five rows are unguarded prose**: edit
+`GRID`'s alpha and no test anywhere goes red. Recompute them by hand, and re-measure in a
+browser, whenever either token changes.
 
 ---
 

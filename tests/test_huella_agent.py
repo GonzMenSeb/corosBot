@@ -30,6 +30,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -78,7 +79,13 @@ def _no_upstream(monkeypatch: pytest.MonkeyPatch):
     Both are real network calls behind an ordinary function name, and both sit under code
     this file drives end to end. A test that forgets its fixture has to fail loudly rather
     than spend the harshest limiter in the system (`AGENTS.md`: a storefront 429 is
-    IP-scoped and outlasts the run that caused it)."""
+    IP-scoped and outlasts the run that caused it).
+
+    FIVE tests below drive `loop.run_turn` and ask for neither `feed` nor `refused`, on
+    purpose: not reaching the storefront is the thing each of them asserts, and this guard
+    is how they assert it. The list is pinned by
+    `test_the_tests_that_never_reach_the_storefront_are_the_ones_that_mean_to`, so a sixth
+    cannot join it by forgetting a fixture."""
 
     async def no_catalog(**_: Any):
         raise AssertionError("this test reached COROS's storefront — ask for `feed`/`refused`")
@@ -241,6 +248,52 @@ class TestTheModelHasNoWayToReachACart:
         )
 
 
+class TestTheTurnsSnapshotIsACatalogueOrAReason:
+    """`Snapshot`'s two validators and the pass-through that quotes them.
+
+    Every catalogue tool answers out of one snapshot, so the two shapes it refuses are the
+    two ways a 429 reaches a person as "COROS has nothing like that". Each test here fails
+    for exactly one guard: delete either validator branch, or the `_unread` pass-through,
+    and one of them goes red."""
+
+    def test_an_ok_snapshot_with_no_products_is_not_a_catalogue(self) -> None:
+        with pytest.raises(ValueError):
+            tools.Snapshot()
+        with pytest.raises(ValueError):
+            tools.Snapshot(products=(), outcome=ToolOutcome.OK, detail="")
+
+    def test_a_failed_snapshot_has_to_say_why(self) -> None:
+        for outcome in (ToolOutcome.RATE_LIMITED, ToolOutcome.TIMEOUT, ToolOutcome.UPSTREAM_ERROR):
+            with pytest.raises(ValueError):
+                tools.Snapshot(outcome=outcome)
+
+    async def test_a_failed_snapshot_reaches_every_tool_as_its_own_refusal(self) -> None:
+        """`_unread` passes the snapshot's own outcome through. Without it a RATE_LIMITED
+        snapshot is a snapshot with no visible products, and `list_collections` reports the
+        whole catalogue as three empty groups — which is the sentence the validator above
+        exists to prevent, said by a different module."""
+        tools.bind_snapshot(
+            tools.Snapshot(outcome=ToolOutcome.RATE_LIMITED, detail="COROS nos limitó")
+        )
+        try:
+            for call in (
+                tools.list_collections(),
+                tools.get_collection_products(handle="relojes"),
+                tools.search_products(query="reloj"),
+                tools.lookup_device_compat(device="PACE 4"),
+            ):
+                result = await call
+                assert result.outcome is ToolOutcome.RATE_LIMITED, (
+                    f"{result.tool} answered {result.outcome.name} out of a RATE_LIMITED\n"
+                    "  snapshot. A refusal that loses its outcome arrives as an empty\n"
+                    "  catalogue, and the model recommends nothing rather than saying why."
+                )
+                assert result.detail == "COROS nos limitó"
+                assert result.data is None
+        finally:
+            tools.bind_snapshot(None)
+
+
 class TestTheTrainingToolAnswersFromTheTurnsViewAndNothingElse:
     """`get_training_summary` knows no session key, holds no credential and cannot reach
     the store. It reads the view the loop bound, which is why a model calling it twice
@@ -344,6 +397,42 @@ class TestUncertaintyIsATypeAndNotACaveat:
             "  tunes it by feel, and huella/state.py imports this number rather than its own."
         )
 
+    def test_the_stale_threshold_carries_the_reason_it_is_three_weeks(self) -> None:
+        assert tools.MAX_STALE_DAYS == 21
+        declared = inspect.getsource(tools).split("MAX_STALE_DAYS = ")[0]
+        assert "Three weeks with nothing recorded" in declared, (
+            "tools.MAX_STALE_DAYS lost the sentence saying why three weeks. Without it the\n"
+            "  next reader tunes it by feel, and every band derived after it silently starts\n"
+            "  describing how somebody trained rather than how they train."
+        )
+
+    def test_the_stale_boundary_is_three_weeks_and_one_more_day_moves_it(self) -> None:
+        """The pair `MIN_SAMPLE` has, for the other threshold, and written with the literal
+        days on purpose: a pair phrased as `MAX_STALE_DAYS ± 1` travels with the constant
+        and passes for any value of it, which is how 21 stayed unpinned."""
+        assert tools.MAX_STALE_DAYS == 21
+        three_weeks = tools.check_uncertainty(
+            summary_of(read(12, newest_days_ago=21)), connected=True
+        )
+        assert three_weeks.stale_days == 21
+        assert three_weeks.flags == (), (
+            f"a window last touched 21 days ago was flagged {list(three_weeks.flags)}. Three\n"
+            "  weeks is the boundary and the boundary is inclusive; flagging it says 'this\n"
+            "  describes how you trained' about training from this month."
+        )
+        assert three_weeks.confidence == "high"
+
+        a_day_later = tools.check_uncertainty(
+            summary_of(read(12, newest_days_ago=22)), connected=True
+        )
+        assert a_day_later.stale_days == 22
+        assert a_day_later.flags == ("stale",), (
+            f"22 days produced {list(a_day_later.flags)}. Past three weeks the window still\n"
+            "  describes real training — it describes how somebody trained, which is a\n"
+            "  different sentence and has to get said as one."
+        )
+        assert a_day_later.grounded is True and a_day_later.confidence == "medium"
+
     def test_a_thin_window_cannot_be_typed_as_demonstrated(self) -> None:
         thin = privacy.derive_requirements(window(tools.MIN_SAMPLE - 1), window_days=WINDOW_DAYS)
         with pytest.raises(ValueError):
@@ -354,6 +443,15 @@ class TestUncertaintyIsATypeAndNotACaveat:
     def test_a_demonstrated_window_with_no_requirements_is_refused(self) -> None:
         with pytest.raises(ValueError):
             tools.DemonstratedTraining(requirements=(), sample_size=12, window_days=WINDOW_DAYS)
+
+    def test_a_window_of_no_days_is_not_a_window(self) -> None:
+        """`window_days: Field(gt=0)`, the other half of `sample_size: Field(ge=MIN_SAMPLE)`.
+        Twelve activities over zero days is not a habit anybody demonstrated, and the count
+        rides out in the athlete-facing sentence as "en 0 días"."""
+        real = privacy.derive_requirements(window(12), window_days=WINDOW_DAYS)
+        for days in (0, -1):
+            with pytest.raises(ValueError):
+                tools.DemonstratedTraining(requirements=real, sample_size=12, window_days=days)
 
     def test_a_requirement_this_module_built_by_hand_cannot_pass_as_the_gates(self) -> None:
         """`DemonstratedTraining` re-runs `privacy.seal()`. The gate sealed these once; an
@@ -388,6 +486,26 @@ class TestUncertaintyIsATypeAndNotACaveat:
                 sample_size=12,
                 window_days=WINDOW_DAYS,
                 statement=tools._statement(("thin",), sample=12, days=WINDOW_DAYS, stale=None),
+            )
+
+    def test_a_window_that_was_never_read_cannot_carry_a_demonstrated_one(self) -> None:
+        """The flags say what went wrong; `readable` says whether anything was read at all.
+        A verdict with no flags, high confidence and `readable=False` passes every other
+        check on the object — it is a clean-looking clearance over a window nobody opened,
+        and this is the only line that refuses it."""
+        real = tools.DemonstratedTraining(
+            requirements=privacy.derive_requirements(window(12), window_days=WINDOW_DAYS),
+            sample_size=12,
+            window_days=WINDOW_DAYS,
+        )
+        with pytest.raises(ValueError):
+            tools.UncertaintyVerdict(
+                readable=False,
+                confidence="high",
+                demonstrated=real,
+                sample_size=12,
+                window_days=WINDOW_DAYS,
+                statement=tools._statement((), sample=12, days=WINDOW_DAYS, stale=None),
             )
 
     def test_confidence_and_demonstrated_cannot_disagree(self) -> None:
@@ -521,6 +639,18 @@ class TestUncertaintyIsATypeAndNotACaveat:
         assert verdict.grounded is False
         assert verdict.manual_dropped == 10 and verdict.sample_size == 0
 
+    def test_a_few_hand_typed_entries_beside_real_ones_are_not_the_flag(self) -> None:
+        """`manual and manual >= sample` — the flag says "most of your history is written by
+        hand", so it belongs to the window where the hand-typed rows OUTWEIGH the measured
+        ones. Firing on any manual entry at all caveats a window that demonstrated plenty."""
+        mixed = tools.check_uncertainty(summary_of(read(12, manual=4)), connected=True)
+        assert mixed.sample_size == 8 and mixed.manual_dropped == 4
+        assert mixed.flags == (), (
+            f"eight measured activities beside four hand-typed ones flagged {list(mixed.flags)}.\n"
+            "  The dropped rows changed nothing the athlete has to be told about."
+        )
+        assert mixed.grounded is True and mixed.confidence == "high"
+
     def test_a_correction_is_flagged_as_one(self) -> None:
         verdict = tools.check_uncertainty(
             summary_of(read(12)), connected=True, overrides=("longest_session_band",)
@@ -567,9 +697,49 @@ class TestTheTurnsViewIsAReadingOrAReason:
             )
 
     def test_a_refused_reading_carries_no_derived_requirements(self) -> None:
-        view = view_of(refusal(ToolOutcome.RATE_LIMITED, "429"))
-        assert view.derived == () and view.effective == ()
-        assert view.detail
+        """The guard is `derived if outcome.is_ok else ()`, so the case has to be one where
+        a band WOULD otherwise have been carried: a `Sync` with six real requirements in it
+        and a reading that refused anyway. A refusal whose `Sync` was empty to begin with
+        asserts `() == ()` and holds with the guard deleted."""
+        summary = summary_of(read(12))
+        assert len(summary.requirements) == len(tools.TRAINING_KEYS), (
+            "the fixture stopped deriving anything, so this test is back to asserting that\n"
+            "  an empty tuple is empty."
+        )
+
+        disconnected = tools.training_view(summary, connected=False)
+        assert disconnected.outcome is ToolOutcome.NOT_ELIGIBLE
+        assert disconnected.derived == () and disconnected.effective == (), (
+            f"a NOT_ELIGIBLE view carried {[r.key for r in disconnected.derived]}. The bands\n"
+            "  were real once; this turn did not read them, and a band on a refused reading\n"
+            "  is advice leaning on a window this session has no permission for."
+        )
+        assert disconnected.detail
+        assert disconnected.uncertainty.grounded is False
+
+        refused_read = view_of(refusal(ToolOutcome.RATE_LIMITED, "429"))
+        assert refused_read.derived == () and refused_read.effective == ()
+        assert refused_read.detail
+
+    def test_a_derived_band_this_module_built_by_hand_cannot_pass_as_the_gates(self) -> None:
+        """`TrainingView` re-runs `privacy.seal()` on `derived`, the way `DemonstratedTraining`
+        does on its own requirements. The gate sealed these once; the second call is from
+        outside, and it is what makes `derived` a boundary rather than a label."""
+        forged = Requirement(
+            key="weekly_hours_band",
+            value="9-12",
+            source="strava",
+            derived=True,
+            sample_size=12,
+            window_days=WINDOW_DAYS,
+            rationale="Entrena 11,5 horas por semana.",
+        )
+        with pytest.raises(privacy.PrivacyLeak):
+            tools.TrainingView(
+                connected=True,
+                derived=(forged,),
+                uncertainty=tools.check_uncertainty(None, connected=False),
+            )
 
     def test_the_correction_sits_where_the_band_it_replaces_sat(self) -> None:
         prefs = tools.Preferences()
@@ -605,6 +775,26 @@ class TestTheAthletesOwnCorrectionsAreStructured:
         assert prefs.set("vo2max", "60") is None
         assert prefs.set("resting_hr", 44) is None
 
+    def test_a_discipline_the_gate_cannot_emit_is_refused_like_a_free_figure(self) -> None:
+        """`discipline` and `sport_mix` are checked against `privacy.ALLOWED_VALUES`, not
+        just against being a string. A correction the gate would then refuse to seal is a
+        correction the athlete can make and the system cannot honour."""
+        prefs = tools.Preferences()
+        assert "curling" not in privacy.ALLOWED_VALUES
+        assert prefs.set("discipline", "curling") is None
+        assert prefs.set("sport_mix", "run+curling") is None
+        assert prefs.keys() == ()
+        assert prefs.set("discipline", "trail_run") is not None
+
+    def test_a_blank_correction_is_not_a_correction(self) -> None:
+        """Nothing typed is not a value. Stored, it reaches the selection prompt as a
+        requirement with an empty value — a constraint that reads as satisfied by anything
+        and was never stated."""
+        prefs = tools.Preferences()
+        for blank in ("", "   ", "\n\t"):
+            assert prefs.set("device", blank) is None
+        assert prefs.keys() == ()
+
     def test_a_correction_of_a_band_gets_a_generated_sentence(self) -> None:
         """It sits beside requirements whose rationale `privacy.seal()` regenerates. Free
         text there would be indistinguishable from a derived one."""
@@ -618,6 +808,15 @@ class TestTheAthletesOwnCorrectionsAreStructured:
         prefs = tools.Preferences()
         stored = prefs.set("device", "APEX 4", rationale="ya tengo uno")
         assert stored is not None and stored.rationale == "ya tengo uno"
+
+    def test_their_own_words_reach_the_next_prompt_truncated(self) -> None:
+        """The one free string `Preferences` stores. It is rendered into the selection
+        prompt every turn from then on, so an unbounded one is a paragraph a model wrote
+        about itself, kept forever and re-read on every message."""
+        prefs = tools.Preferences()
+        stored = prefs.set("device", "APEX 4", rationale="porque " * 200)
+        assert stored is not None
+        assert len(stored.rationale) == tools.RATIONALE_CHARS
 
     def test_dropping_is_a_deletion_and_not_a_later_contradiction(self) -> None:
         prefs = tools.Preferences()
@@ -760,6 +959,16 @@ class TestABandNeverLeavesAsAMeasuredFigure:
         )
         assert tools.band_phrases((discipline,)) == ()
 
+    def test_a_band_key_holding_a_bare_number_carries_no_phrase_either(self) -> None:
+        """A phrase out of this function is a licence: `guardrails.scrub_prose` keeps every
+        figure it backs. `Preferences.set` and `privacy.seal` both refuse an integer under a
+        band key, and this is the third refusal — the one on the way out."""
+        bare = Requirement(key="weekly_hours_band", value=8, source="user", derived=False)
+        assert tools.band_phrases((bare,)) == (), (
+            "a band key holding 8 produced '8 horas' as backing text. Nothing derived it,\n"
+            "  and backing it is how a measurement gets written down as one."
+        )
+
 
 class TestNothingUntrustedOrUnitAmbiguousReachesTheModel:
     def test_slim_emits_a_fixed_whitelist(self, products: tuple[CatalogProduct, ...]) -> None:
@@ -802,9 +1011,63 @@ class TestNothingUntrustedOrUnitAmbiguousReachesTheModel:
         )
         assert mine["price_minor"] == theirs["price_minor"]
 
+    def test_a_long_title_or_handle_reaches_the_model_truncated(
+        self, products: tuple[CatalogProduct, ...]
+    ) -> None:
+        """`_slim` whitelists AND truncates. A title is feed text, and untruncated feed text
+        in a prompt is a paragraph of vendor prose arriving under a field name the model
+        trusts."""
+        overlong = products[0].model_copy(update={"title": "T" * 300, "handle": "h" * 300})
+        slim = tools._slim(overlong)
+        assert len(slim["title"]) == tools.TITLE_CHARS
+        assert len(slim["product_handle"]) == tools.TITLE_CHARS
+
+    def test_a_product_with_more_variants_than_the_cap_is_cut_to_it(
+        self, products: tuple[CatalogProduct, ...]
+    ) -> None:
+        crowded = max(products, key=lambda p: len(p.variants))
+        assert len(crowded.variants) > tools.MAX_VARIANTS, (
+            "no fixture product exceeds MAX_VARIANTS any more, so the cap is untested here."
+        )
+        assert len(tools._slim(crowded)["variants"]) == tools.MAX_VARIANTS
+
+    def test_a_conversational_query_is_cut_to_the_token_budget(self) -> None:
+        """Every token has to match, so an uncapped query is a sentence ANDed together and
+        the answer is `unavailable` — which this catalogue's own declaration tells the model
+        means the product does not exist. The cap is what keeps that answer honest."""
+        sentence = "quiero un reloj para correr trail en la montaña los domingos"
+        assert len(tools._tokens(sentence)) == tools.MAX_QUERY_TOKENS
+
     async def test_a_search_reads_every_visible_product(self, bound: Any) -> None:
         result = await tools.search_products(query="correa", limit=99)
         assert result.data["searched"] == 43
+
+    async def test_every_token_has_to_match_or_the_catalogue_is_just_shuffled(
+        self, bound: Any
+    ) -> None:
+        """An OR match over 43 products returns most of them for any query, which reads as
+        a recommendation and is a shuffled catalogue."""
+        both = await tools.search_products(query="correa nylon", limit=99)
+        correa = await tools.search_products(query="correa", limit=99)
+        nylon = await tools.search_products(query="nylon", limit=99)
+
+        assert correa.data["matched"] > nylon.data["matched"] > 0, (
+            "the two words now select the same products, so this test can no longer tell an\n"
+            "  intersection from a union."
+        )
+        assert both.data["matched"] <= nylon.data["matched"], (
+            f"'correa nylon' matched {both.data['matched']} of 43 where 'nylon' alone matched\n"
+            f"  {nylon.data['matched']}. Adding a word widened the answer, so the match is an\n"
+            "  OR and the model is being handed the catalogue in a new order."
+        )
+
+    async def test_a_negative_limit_still_answers_with_a_product(self, bound: Any) -> None:
+        """`max(1, ...)`. A model that asks for -9 products gets one, not a Python slice run
+        backwards off the end of the list and reported as an empty group."""
+        result = await tools.get_collection_products(handle="relojes", limit=-9)
+        assert result.outcome is ToolOutcome.OK
+        assert result.data["shown"] == 1 and len(result.data["products"]) == 1
+        assert result.data["count"] == 4
 
     async def test_an_empty_query_is_refused_rather_than_answered_with_everything(
         self, bound: Any
@@ -873,19 +1136,31 @@ class TestTheStagedPipelineIsWrittenDownStageByStage:
                 "  and lets the model improvise a refusal."
             )
 
-    def test_the_three_ways_a_history_can_fail_get_three_different_sentences(self) -> None:
-        """"Strava limited us", "the authorization expired" and "no account is connected"
-        are three different things to do next. One apology for all three teaches a person
-        to retry the wrong one."""
-        templates = [
-            prompts.STRAVA_LIMITED_TEMPLATE,
-            prompts.STRAVA_RECONNECT_TEMPLATE,
-            prompts.STRAVA_UNREACHABLE_TEMPLATE,
-            prompts.NOT_CONNECTED_TEMPLATE,
-        ]
-        assert len({t.strip() for t in templates}) == len(templates)
-        for template in templates:
+    def test_each_way_a_history_can_fail_says_its_own_failure(self) -> None:
+        """"Strava limited us", "the read did not finish", "the authorization expired" and
+        "no account is connected" are four different things to do next. Distinctness is not
+        enough: a template that OPENS with another one's sentence is distinct and still
+        tells a timeout victim to wait out a rate limit."""
+        own = {
+            "STRAVA_LIMITED_TEMPLATE": "nos limitaron las consultas",
+            "STRAVA_UNREACHABLE_TEMPLATE": "No terminé de leer tu historial",
+            "STRAVA_RECONNECT_TEMPLATE": "Vuelve a conectar la cuenta",
+            "NOT_CONNECTED_TEMPLATE": "Todavía no tienes Strava conectado",
+        }
+        templates = {name: getattr(prompts, name) for name in own}
+        assert len({t.strip() for t in templates.values()}) == len(templates)
+
+        for name, template in templates.items():
+            assert own[name] in template, f"prompts.{name} stopped saying what went wrong"
             assert "agotado" not in template
+            for other, sentence in own.items():
+                if other == name:
+                    continue
+                assert sentence not in template, (
+                    f"prompts.{name} carries {other}'s own sentence ({sentence!r}). The person\n"
+                    "  reads the first thing it says and does the wrong next thing: waits out a\n"
+                    "  limiter that never fired, or reconnects an authorization that is fine."
+                )
 
     def test_the_retrieval_prompt_names_only_tools_that_exist(self) -> None:
         named = {t for t in HUELLA_TOOLS | WITHHELD if t in prompts.RETRIEVE_PROMPT}
@@ -918,12 +1193,40 @@ class TestTheStagedPipelineIsWrittenDownStageByStage:
         assert "desconectar" in prompts.SYSTEM and "borrar" in prompts.SYSTEM
 
     def test_the_interview_prompt_never_asks_for_a_measurement(self) -> None:
+        """The claim is the prompt does not SOLICIT one — not that a prohibition is still
+        written down somewhere in it. A surviving `Nunca preguntas por pulso` above a fresh
+        `Pregunta su VO2 max exacto` is a prompt that asks for a measurement."""
+        prompt = prompts.INTERVIEW_PROMPT
+        forbidding = [line for line in prompt.splitlines() if "Nunca preguntas por" in line]
+        assert len(forbidding) == 1, (
+            "the line that forbids the measurements moved, split or multiplied, so the\n"
+            "  'appears only where it is forbidden' check below no longer means anything."
+        )
+
         for banned in ("pulso", "ritmo", "peso", "lesiones", "cédula"):
-            assert banned in prompts.INTERVIEW_PROMPT, (
+            assert banned in forbidding[0], (
                 f"the interview prompt stopped forbidding {banned!r}. The fallback is where a\n"
                 "  model asks for what it cannot read, and this is the only stage that asks\n"
                 "  the athlete anything at all."
             )
+            assert len(re.findall(rf"\b{banned}\b", prompt)) == 1, (
+                f"{banned!r} appears somewhere other than the line that forbids it. The one\n"
+                "  other place it can appear is a sentence telling the model to ask for it."
+            )
+
+        for never in ("vo2", "ftp", "vatios", "potencia", "lactato", "umbral", "hrv",
+                      "frecuencia cardiaca", "calorías"):
+            assert never not in prompt.lower(), (
+                f"{never!r} reached the interview prompt. Huella does not read it, cannot\n"
+                "  verify it and has no band to put it in, so asking for it collects a\n"
+                "  measurement it will then have to ignore."
+            )
+
+        assert len(re.findall(r"(?i)pregunt", prompt)) == 7, (
+            "the interview prompt gained or lost an instruction about asking. Every one of\n"
+            "  the seven is deliberate — one opener, one heading, four rules and one\n"
+            "  permission to stay quiet — and a new one is a new thing being solicited."
+        )
 
     def test_the_prompts_are_spanish_because_the_storefront_is(self) -> None:
         assert "COROS" in prompts.SYSTEM
@@ -2145,6 +2448,33 @@ class TestTheLoopIsRunnableAndAudited:
         assert result.error == "PrivacyLeak"
         assert "weekly_hours_band" not in result.text
         assert any(e.event == "turn.privacy_leak" for e in sink)
+
+    def test_the_tests_that_never_reach_the_storefront_are_the_ones_that_mean_to(self) -> None:
+        """`_no_upstream` turns a forgotten `feed` into an assertion failure, which makes
+        omitting it a claim rather than an oversight. FIVE tests make that claim, and the
+        set is written out here because counting them by eye is how the number in a
+        docstring goes stale: a sixth arriving by accident is a test asserting something
+        nobody wrote down, and a fifth disappearing is coverage nobody notices leaving."""
+        source = Path(__file__).read_text()
+        without = {
+            node.name
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.AsyncFunctionDef)
+            and node.name.startswith("test_")
+            and "run_turn" in (ast.get_source_segment(source, node) or "")
+            and not {"feed", "refused"} & {a.arg for a in node.args.args}
+        }
+        assert without == {
+            "test_the_storefront_is_never_touched_when_the_history_refused",
+            "test_a_greeting_costs_one_model_call_and_never_reads_the_history",
+            "test_a_refusal_never_reaches_the_history_or_the_catalogue",
+            "test_a_safety_critical_turn_says_it_reads_none_of_that",
+            "test_the_payload_is_redacted_from_the_history_the_model_sees",
+        }, (
+            "the set of tests that drive run_turn without a storefront fixture changed. Each\n"
+            "  one is asserting that the turn stops before COROS is touched; a new one is\n"
+            "  either that claim undocumented, or a missing fixture about to fail loudly."
+        )
 
     def test_the_module_can_be_driven_standalone(self) -> None:
         assert callable(loop._demo)

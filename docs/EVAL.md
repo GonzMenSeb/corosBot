@@ -12,8 +12,13 @@ measuring whether somebody paid.
 
 ```bash
 make check                                                   # the offline suite
+make eval                                                    # the harness
 PYTHONPATH=.:packages:apps/brujula ./.venv/bin/python scripts/eval_baseline.py
 ```
+
+`tests/test_eval_baseline.py` runs the harness over the fixtures inside `make check` and
+pins its judgement, so this file is not the only thing that says the numbers below are
+the numbers.
 
 | flag | |
 |---|---|
@@ -22,9 +27,13 @@ PYTHONPATH=.:packages:apps/brujula ./.venv/bin/python scripts/eval_baseline.py
 | `--item ID` | run one case (repeatable) |
 | `--allow-regression` | report a metric the baseline wins instead of exiting non-zero |
 
-Exit codes: `0` all six metrics won or tied · `1` the baseline won one, or the arms did
-not spend the same budget · `2` the metric table and `evidence.build`'s declared checks
-have drifted apart.
+Exit codes:
+
+| code | |
+|---|---|
+| `0` | all six metrics won or tied |
+| `1` | the baseline won a metric, or the arms did not spend the same budget |
+| `2` | **two distinct failures.** Either the metric table and `evidence.build`'s declared checks have drifted apart, or `--item` matched nothing — a typo'd id runs zero items and must not look like a clean sweep |
 
 ---
 
@@ -52,11 +61,19 @@ measures is the shared core.
 ### The two arms
 
 **AGENT** — the shipped path, called directly rather than re-implemented:
-`loop._decide` → `evidence.build` → `scrub_prose`, plus the presentation rules that decide
-whether prose is generated at all. Importing the private `_decide` is intentional: a
-harness with its own copy of the check order would drift from the loop and end up
-certifying itself. This one breaks loudly when `loop.py` moves, which is what the
-maintenance contract wants from anything watching it.
+`loop._decide` → `evidence.build` → `loop._blocked` or `loop._unread` on the two refusal
+paths → `scrub_prose`. Importing those privates is intentional: a harness with its own
+copy of the check order, or of a refusal path, would drift from the loop and end up
+certifying itself. It had. Until 30 Jul 2026 this file re-implemented `_blocked` and
+`_unread` inline, `del loop._blocked` left the harness at exit `0`, and the inline copy
+never emitted `guardrail.evidence_blocked` — so anything reading that event was
+unmeasured. It now calls them, and deleting either off `loop` fails the harness.
+
+**One stage is still a copy, and it is structural.** `loop._present` is a coroutine whose
+`recommend` branch calls the model, so its `not_sold_locally` / `buy_nothing` /
+unreachable branches cannot be reached without one. The harness rebuilds those three from
+`loop._names` and the same `prompts` templates rather than from pasted text, so a change
+to either still shows up here; a change to the *branching* in `_present` would not.
 
 **BASELINE** — retrieval-grounded pass-through. Same snapshot, same tool calls, same
 proposal. It joins each pick back to the feed by product id and renders **the feed's own**
@@ -86,29 +103,46 @@ is exactly why "does the addition earn its keep at the same budget" is the right
 
 **It is allowed to get the hard cases right.** `_Selection` really does have an
 `unavailable_devices` field, so a model *can* name a watch COROS Colombia does not sell
-without being made to, and the baseline passes that claim straight through. One of the two
-absence cases in the item set is recorded with the model getting it right, and the
-baseline scores clean on it. A metric the baseline could never pass would be decoration.
+without being made to, and the baseline passes that claim straight through. Two of the
+three absence cases in the item set are recorded with the model getting it right, and the
+baseline scores clean on both. A metric the baseline could never pass would be decoration.
 
 **Where it is NOT charged for something.** It is not penalised for failing to filter
 out-of-stock items — it is penalised for what it put on screen. The model saw `available`
 per variant in `tools._slim` and proposed a sold-out one anyway. Filtering that is a check,
 and the baseline is the no-check arm.
 
-### The one assumption
+### The one assumption — and the one field that can be tuned
 
-Everything in an `Item` is a situation or a replay. Ground truth is derived from
-`fixtures/products.json` at scoring time; there is no field in which a result could be
-pre-written, which is the structural reason the harness cannot be tuned by annotation.
+Almost everything in an `Item` is a situation or a replay, and ground truth is derived from
+`fixtures/products.json` at scoring time. **`Item.claimed_unavailable` is the exception, and
+it is not a small one.** It is the replayed model's `_Selection.unavailable_devices`; the
+baseline renders it verbatim; nothing re-derives it. It is therefore the *only* input in the
+whole harness that decides a metric by itself:
 
-The exception, stated plainly: **whether the replayed model filled `unavailable_devices` is
-a choice made in this file.** On `absent-vertix-2` it did not; on `absent-pace-3-with-strap`
-it did. That pair is a modelling assumption, not a measurement, and it is the assumption
-this evaluation is most exposed on. It is set that way because a prompt-level rule that
-holds once and not the next time is the entire argument for moving the rule into Python —
-and because setting it to "never" would be straw. What the local-availability metric can
-therefore show is that the baseline is **unreliable** here, not that it is incapable. How
-often a real model forgets is not measurable offline and this file does not claim it.
+> Set `claimed_unavailable=("vertix-2",)` on `absent-vertix-2` — touching no fixture, no
+> check and no threshold — and `local_availability` goes from **AGENT** to **tie**.
+> Verified by doing it. `tests/test_eval_baseline.py` pins that this is true, so the
+> concession cannot quietly stop being stated.
+
+Earlier versions of this file and of the harness's own docstring said there was "no field in
+`Item` in which a result could be pre-written". That was false, and this is the field.
+
+Given that, the values are argued rather than assumed away. Across the three absence cases:
+on `absent-vertix-2` the model did **not** name the absence; on `absent-pace-3-with-strap`
+and on `absent-pace-pro` it did. That split is a modelling assumption, not a measurement,
+and it is what this evaluation is most exposed on. It is set that way because a prompt-level
+rule that holds twice and not the third time is the entire argument for moving the rule into
+Python — and because setting it to "never" would be straw. So the local-availability metric
+shows that the baseline is **unreliable** here, not that it is incapable. How often a real
+model forgets is not measurable offline and this file does not claim it.
+
+Two further honest notes on that metric. It reads `unavailable_devices`, a **structured
+field**, not the copy: on `absent-pace-pro` the baseline scores clean while the sentence it
+would show a person is *"no encontré nada"*, which never names the PACE Pro at all. And the
+agent's side of it is not a modelling choice — `check_local_availability` re-derives the
+absence from the registry, and `LocalAvailabilityVerdict.is_available` is `Literal[True]`, so
+an absent watch has no cleared form to travel in.
 
 ---
 
@@ -137,12 +171,16 @@ I/O, no clock, no model — and `evidence.build` reads a trace that was already 
 five checks and the bundle cost zero additional reads, zero tool calls and zero model
 calls. The ledger is how that is demonstrated instead of asserted.
 
-Measured, 30 Jul 2026, 12 items:
+Measured, 30 Jul 2026, 13 items:
 
 ```
-baseline  catalog_reads=12 tool_calls=15 model_calls=0 replayed_model_stages=12
-agent     catalog_reads=12 tool_calls=15 model_calls=0 replayed_model_stages=12
+baseline  catalog_reads=13 tool_calls=16 model_calls=0 replayed_model_stages=13
+agent     catalog_reads=13 tool_calls=16 model_calls=0 replayed_model_stages=13
 ```
+
+`tests/test_eval_baseline.py` asserts those four numbers per arm, asserts the two ledgers
+agree item by item, and makes one arm spend an extra tool call to confirm the comparison
+actually fails when they do not.
 
 ---
 
@@ -182,25 +220,27 @@ string* is exactly what that function does. It is a signature, not a proof.
 
 ## 5. What it measured — 30 Jul 2026
 
-12 items, `fixtures/products.json`, model replayed, budgets identical.
+13 items, `fixtures/products.json`, model replayed, budgets identical. Every number in
+this section is asserted by `tests/test_eval_baseline.py` against a live run of the
+harness, so a stale table here fails `make check`.
 
-### Headline, all 12 items
+### Headline, all 13 items
 
 | metric | baseline | agent | winner |
 |---|---|---|---|
 | `provenance` | 3/12 | 0/6 | **agent** |
 | `stock` | 3/12 | 0/6 | **agent** |
 | `budget` | 2/14 | 0/7 | **agent** |
-| `local_availability` | 1/2 | 0/2 | **agent** |
+| `local_availability` | 1/3 | 0/3 | **agent** |
 | `buy_nothing` | 3/3 | 0/3 | **agent** |
-| `prose` | 5/12 | 0/12 | **agent** |
+| `prose` | 5/13 | 0/13 | **agent** |
 
 ### The control that matters more
 
-Six of those twelve are items where **the agent refused and the baseline answered**. An arm
-that refuses has nothing to be wrong about, so the headline alone would be worth very
-little. The harness therefore also scores the subset where **both arms put products on
-screen** — nobody abstained, so nothing below can be abstention:
+Seven of those thirteen are items where the agent put no products on screen, and on five of
+them the baseline did. An arm that refuses has nothing to be wrong about, so the headline
+alone would be worth very little. The harness therefore also scores the subset where **both
+arms put products on screen** — nobody abstained, so nothing below can be abstention:
 
 | metric | baseline | agent | winner |
 |---|---|---|---|
@@ -219,12 +259,15 @@ honest reading, and it is the one to quote.
 
 ```
 items answered with products      baseline 11      agent 6
-evidence bundle accepted                  n/a      agent 11
+evidence bundle accepted                  n/a      agent 12
 ```
 
-The baseline answers on 11 of 12 and the agent on 6. Higher is not better here — an answer
-beats a refusal only when it is true, which is what the six metrics measure — but it is the
-agent's real cost and it is printed at the same size as the wins.
+The baseline answers with products on 11 of 13 and the agent on 6. Higher is not better
+here — an answer beats a refusal only when it is true, which is what the six metrics
+measure — but it is the agent's real cost and it is printed at the same size as the wins.
+
+The one bundle that is not accepted is `over-budget-apex-4`, and §6 is about the sentence
+it produces.
 
 ---
 
@@ -254,7 +297,9 @@ cuenta contra tu presupuesto"* — "I failed to check your budget". `check_budge
 returned a precise verdict: nothing fits, the cheapest APEX 4 is $1.899.000 against a
 $1.000.000 cap. `_blocked` selects on `c.outcome != "pass"`, which lumps `fail` in with
 `not_run`, so a check that ran and disagreed is described as one that never happened. The
-refusal is safe and the sentence is wrong.
+refusal is safe and the sentence is wrong. That sentence is now the shipped `_blocked`'s
+own — the harness calls it rather than reproducing it — so this paragraph is a measurement
+and stops being true the moment the function is fixed.
 
 **Two of the baseline's prose "defects" are true sentences.** `nylon` and `46 mm` are
 counted unbacked because `guardrails._BACKING_FIELDS` over an `AdviceItem` is effectively
@@ -275,7 +320,19 @@ agent's scrub is deleting true words to hold the line.
   whether its copy fits the situation, which is why §6 exists and why the harness prints
   every refusal with its need, its copy and its candidate count.
 - **How often a real model makes each mistake.** The item set covers the failure taxonomy;
-  it is not a frequency estimate, and 12 hand-built cases are not a sample.
+  it is not a frequency estimate, and 13 hand-built cases are not a sample.
+- **Whether an absence is named *to the person*.** `local_availability` reads
+  `unavailable_devices`, a structured field. On `absent-pace-pro` the baseline scores clean
+  on it while the copy it would show says *"no encontré nada"* and never names the watch.
+  The metric measures the field the check guarantees; the sentence is §6's territory.
+- **The `not_sold_locally` arm of the `buy_nothing` metric.** `_score_buy_nothing` accepts
+  either `buy_nothing` or `not_sold_locally` as the honest kind when nothing purchasable
+  was retrieved, and the second of those is unreachable by construction: `_decide` orders
+  `nothing.buy_nothing` *before* `local.unavailable`, so an empty purchasable set always
+  yields `buy_nothing`. It is kept as the allowance it is — reordering those two branches
+  in `loop.py` must not turn a correct absence refusal into a defect — and `absent-pace-pro`
+  reaches `not_sold_locally` by the only route there is, with purchasable straps retrieved
+  and the metric therefore not exercised on that item.
 - **Latency, tokens, or cost in currency.** The ledger counts calls, which is what the
   limiters count.
 - **Huella's own layer.** The uncertainty flags, the privacy boundary and the training view
@@ -294,6 +351,7 @@ agent's scrub is deleting true words to hold the line.
 | exit `1`, `REGRESSION — the baseline is better on: …` | a check stopped firing, or stopped disagreeing when it should. Re-run with `--verbose`; the defect tags name the product |
 | exit `1`, `[FAIL] the arms did not spend the same` | the harness itself is broken, or a check started doing I/O. Nothing else in the output is a comparison until this is fixed |
 | exit `2`, metric table vs. declared checks | someone added a check to `evidence._DECLARED` without a metric, or removed one. Both move together |
+| exit `2`, `no item matched [...]` | a typo'd `--item`. Nothing ran; this is the other thing `2` means |
 | `RuntimeError: the arms retrieved different candidates` | retrieval became non-deterministic. Harness bug |
 | a metric flips to `not exercised` | the item that covered it stopped covering it — usually because the fixture was re-dumped and a product's stock or price moved |
 | the control table's wins shrink toward the headline's | the agent is abstaining more. Check the answered counter before celebrating the defect counts |
@@ -317,16 +375,25 @@ winning. A harness tuned until the agent wins measures nothing.
 |---|---|
 | `packages/coros_core/evidence.py`'s declared checks | add or remove the matching metric in `scripts/eval_baseline.py::METRICS` — the harness exits `2` otherwise — and the table in §4 |
 | `packages/coros_core/guardrails.py` (a verdict shape, a taxonomy) | re-run the harness; the defect tags are that module's own `reason` literals |
-| `apps/brujula/brujula/agent/loop.py::_decide` or `_blocked` | re-run the harness. It calls both directly, so a reordered check or a changed refusal path shows up here before it shows up live |
+| `loop.py::_decide`, `_blocked`, `_unread` or `_names` | re-run the harness. It calls all four directly — `tests/test_eval_baseline.py` deletes each one off the module and asserts the harness dies — so a reordered check or a changed refusal path shows up here before it shows up live |
+| `loop.py::_present`'s branching (not its templates) | edit `_KIND_TEMPLATE` in the harness to match. This is the one stage the harness re-implements, for the reason in §1, and it is the one change that will *not* fail on its own |
 | `loop.MAX_TOOL_CALLS_PER_TURN` / `MAX_MODEL_CALLS` | nothing — the harness reads them — but re-run it, because an item replaying more tool calls than the cap now raises |
 | `fixtures/products.json` | re-run with `--verbose` and re-record §5. See the re-baseline note in §8 |
+| `scripts/eval_baseline.py::ITEMS` | re-record §5 and the ledger block in §3. `tests/test_eval_baseline.py` asserts both against a live run and will fail until you do |
 
-Two things this lane could not add and the next one should. **A `make eval` target** —
-every other entry point in this repo goes through `make`, which is where `PYPATH` is
-exported; until then the invocation at the top of this file is the only supported one. And
-**`tests/test_eval_baseline.py`**, the counterpart to
-`tests/test_verify_brujula.py`. This script is the only thing that scores the pipeline
-against an alternative, so a bug in its judgement is a bug nothing else catches. It should
-pin at minimum that the two ledgers are equal on every item, that `METRICS` and
-`evidence.build`'s declared checks agree, that a deliberately broken arm is detected, and
-that no item's expectation can be satisfied by an annotation rather than by the fixture.
+### What runs it
+
+`make eval` is the supported invocation — it is where `PYPATH` is exported, like every
+other entry point here. `tests/test_eval_baseline.py` then runs the same harness inside
+`make check`, which is what makes "CI-runnable" a fact rather than a capability: before it
+existed the harness was in neither the Makefile nor `.github/`, and nothing would have
+noticed it breaking.
+
+That test is the counterpart to `tests/test_verify_brujula.py`. This script is the only
+thing that scores the pipeline against an alternative, so a bug in its *judgement* is a bug
+nothing else catches. It pins the two ledgers equal on every item and in total, the six
+aggregate metrics and the like-for-like control, the kind every item lands on for both
+arms, that `METRICS` and `evidence.build`'s declared checks agree, that a deliberately
+broken agent arm is caught rather than excused, that the four `loop` privates are really
+called, that the blocked path emits `guardrail.evidence_blocked`, and — because §2 concedes
+it — that `claimed_unavailable` is the one field able to move a verdict on its own.

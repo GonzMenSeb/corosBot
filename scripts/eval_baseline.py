@@ -52,8 +52,15 @@ forces a seventh metric rather than being silently unmeasured.
 
 Ground truth is the fixture, never an annotation. An item carries a need, a budget, a
 snapshot mode, the replayed proposal and the replayed prose; every expectation is derived
-from `fixtures/products.json` at scoring time. There is no field in `Item` in which a
-result could be pre-written.
+from `fixtures/products.json` at scoring time.
+
+**One field is an exception, and it is the one to distrust.** `Item.claimed_unavailable`
+is the replayed model's `_Selection.unavailable_devices`. The baseline renders it verbatim
+and nothing re-derives it, so it *alone* decides the baseline's `local_availability`
+score: filling it on `absent-vertix-2` turns that metric from AGENT into a tie without
+touching a fixture or a check. It is a recorded model output in exactly the sense the
+picks are — and it is the single input here a maintainer could tune to change a verdict.
+`docs/EVAL.md` §2, "the one assumption", argues each value it is set to.
 """
 
 from __future__ import annotations
@@ -319,6 +326,10 @@ def run_baseline(
 
 # ── arm 2 · the shipped agent ─────────────────────────────────────────────────
 
+# The one stage still re-implemented here, and the reason is structural: `loop._present`
+# is a coroutine whose `recommend` branch calls the model, so its refusal branches cannot
+# be reached without one. Everything it needs to build them — `_names`, the templates — is
+# imported rather than copied, so a change to either shows up.
 _KIND_TEMPLATE = {
     "buy_nothing": lambda d: prompts.BUY_NOTHING_TEMPLATE.format(
         reason=d.reason or "de lo que revisé, nada resuelve lo que me contaste"
@@ -331,39 +342,53 @@ _KIND_TEMPLATE = {
 }
 
 
+def _from_turn(result: loop.TurnResult) -> Rendered:
+    """A `TurnResult` off one of the loop's own refusal paths, in the shape a metric reads.
+
+    Everything here is read back off the result the loop built. Rebuilding any of it from
+    the inputs would be the re-implementation this function exists to remove."""
+    advice, bundle = result.advice, result.evidence
+    if advice is None or bundle is None:
+        raise RuntimeError(
+            f"loop returned stage {result.stage!r} with advice={advice} evidence={bundle}. "
+            "The refusal paths this harness calls set both; nothing scored afterwards "
+            "would be the shipped behaviour."
+        )
+    return Rendered(
+        arm="agent",
+        kind=advice.kind,
+        items=advice.items,
+        unavailable_devices=advice.unavailable_devices,
+        caveats=advice.caveats,
+        text=result.text,
+        accepted=bundle.accepted,
+        blocking=bundle.blocking,
+    )
+
+
 def run_agent(
     item: Item,
     snapshot: tools.Snapshot,
     candidates: Sequence[CatalogProduct],
     conclusive: bool,
+    mark: int,
 ) -> Rendered:
-    """`loop._decide` verbatim, then `evidence.build`, then the presentation rules.
+    """`loop._decide` verbatim, then `evidence.build`, then the loop's own refusal paths.
 
-    Calling the shipped private is deliberate. A harness that re-implemented the five
-    checks would drift from the loop and start certifying its own copy of the pipeline;
-    this one breaks loudly instead, which is what `AGENTS.md`'s maintenance contract wants
-    from anything that watches `loop.py`."""
-    mark = trace.mark()
+    Calling the shipped privates is deliberate, and it is the whole of the claim
+    `docs/EVAL.md` §9 makes for this file. A harness that re-implemented the five checks —
+    or `_unread`, or `_blocked` — would drift from the loop and start certifying its own
+    copy of the pipeline. It already had: the inline `_blocked` here never emitted
+    `guardrail.evidence_blocked`, so deleting the real one off `loop` left the harness at
+    exit 0. Now `del loop._blocked` fails it, which is what `AGENTS.md`'s maintenance
+    contract wants from anything that watches `loop.py`.
 
+    `mark` is taken by the caller BEFORE retrieval, where `run_turn` takes it, so the
+    bundle covers the same span of trace a live turn's bundle covers."""
     if not snapshot.outcome.is_ok:
-        # `loop._unread`: no stage completes, and buy-nothing is recorded as unreachable
-        # rather than as an empty catalogue.
-        guardrails.check_buy_nothing((), retrieval_conclusive=False)
-        text = (
-            prompts.RATE_LIMITED_TEMPLATE
-            if snapshot.outcome is ToolOutcome.RATE_LIMITED
-            else prompts.UNREACHABLE_TEMPLATE
-        )
-        advice = Advice(kind="insufficient_evidence", explanation=text, caveats=(snapshot.detail,))
-        bundle = evidence.build(advice, trace.since(mark))
-        return Rendered(
-            arm="agent",
-            kind=advice.kind,
-            caveats=advice.caveats,
-            text=text,
-            accepted=bundle.accepted,
-            blocking=bundle.blocking,
-        )
+        # No stage completes, and buy-nothing is recorded as unreachable rather than as
+        # an empty catalogue.
+        return _from_turn(loop._unread(snapshot, loop.TurnResult(), mark))
 
     session = loop.ConversationSession(question=item.need, conclusive=conclusive)
     spec = AdviceSpec(
@@ -901,6 +926,24 @@ ITEMS: tuple[Item, ...] = (
         ),
         prose="Esta correa es del ancho que tu reloj usa.",
     ),
+    Item(
+        id="absent-pace-pro",
+        need="quiero un COROS PACE Pro",
+        # The only item that reaches `not_sold_locally` — the advice kind behind the metric
+        # docs/EVAL.md §4 calls Brújula's differentiator. Without it `loop._names`,
+        # `prompts.NOT_SOLD_TEMPLATE` and that branch of `_decide` are unmeasured.
+        #
+        # The model is recorded getting this one RIGHT: no substitute proposed and the
+        # absence named. That is the reading least favourable to the agent — both arms
+        # score clean, so the item buys coverage and no win.
+        claimed_unavailable=("pace-pro",),
+        # `search_products` finds PACE Pro STRAPS and no PACE Pro, which is exactly the
+        # hazard `UnavailableDevice.tradeoff` is written for. Those straps are purchasable,
+        # and that is what keeps `_decide` off the buy-nothing branch and on this one.
+        tool_calls=((_SEARCH, {"query": "pace pro"}),),
+        picks=(),
+        prose="",
+    ),
 )
 
 
@@ -937,12 +980,17 @@ async def run_item(item: Item, products: Sequence[CatalogProduct]) -> Run:
         sink: list[trace.TraceEvent] = []
         trace.bind_sink(sink)
         try:
+            # Before retrieval, where `run_turn` takes it. Nothing a declared guardrail
+            # reads is emitted during retrieval today, so this changes no number — but
+            # `guardrail.case_unspecified` fires in there, and a bundle that starts after
+            # it is not the bundle the turn builds.
+            mark = trace.mark()
             snapshot, candidates, conclusive = await _retrieve(item, products, ledger)
             ledger.replay_model()
             if arm == "baseline":
                 rendered[arm] = run_baseline(item, snapshot, candidates)
             else:
-                rendered[arm] = run_agent(item, snapshot, candidates, conclusive)
+                rendered[arm] = run_agent(item, snapshot, candidates, conclusive, mark)
         finally:
             tools.bind_snapshot(None)
             trace.bind_sink(None)
@@ -1069,10 +1117,10 @@ def report(runs: Sequence[Run], verbose: bool) -> tuple[dict[str, str], bool]:
     print(f"  {'items answered with products':<{_W}} {b_answered:>10} {a_answered:>10}")
     print(f"  {'evidence bundle accepted':<{_W}} {'n/a':>10} {a_accepted:>10}")
     print(
-        "  The baseline answers more often, and on this item set it always answers. That is\n"
-        "  the trade and not a win — an answer beats a refusal only when it is true — but it\n"
-        "  is also the agent's real cost, and the refusals below are where a reader should\n"
-        "  look before believing the table above."
+        f"  The baseline answers with products on {b_answered} of {len(runs)} and the agent on\n"
+        f"  {a_answered}. That is the trade and not a win — an answer beats a refusal only when\n"
+        "  it is true — but it is also the agent's real cost, and the refusals below are where\n"
+        "  a reader should look before believing the table above."
     )
     _refusals_block(runs)
 

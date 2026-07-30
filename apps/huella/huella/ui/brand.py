@@ -47,8 +47,10 @@ separation is not the same claim. Every pip also clears the non-text floor on bo
 it straddles, the plate and the surface behind the mark; the tightest is `SUCCESS on INK_2
 3.33:1`.
 
-**The uncertainty red is not here and must not arrive.** FLAG_INK is the confidence of the
-answer — "this leans on thin or stale data" — never the health of the process. A red pip
+**The uncertainty red is not here and must not arrive.** FLAG_INK says "do not lean on what
+is on screen" — a window too thin or too stale to reason from, a check that ran and failed, a
+turn that broke — and a key that was never configured is none of the three, because nothing
+has been asked yet and nothing has gone wrong; that is the amber's job. A red pip
 would say the advice is thin when what it meant was that a key is missing, and
 `theme.UNCERTAINTY` exists to keep that colour off everything else.
 
@@ -172,7 +174,7 @@ def _dot(ink: str, pulse: bool, surface: str) -> rx.Component:
         height="18%",
         box_sizing="content-box",
         border_radius=RADIUS_PILL,
-        background=ink,
+        background="var(--huella-flag-ink)",
         border=f"2px solid {surface}",
         class_name=PULSE_CLASS if pulse else "",
     )

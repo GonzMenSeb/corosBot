@@ -68,7 +68,7 @@
      Declared because it is a token, referenced by nothing in this file and never
      to be: the orange arrives inside the vendored assets, and a rule that painted
      it would be us drawing their mark. */
-  --huella-strava: #FC5200;
+  --huella-strava: #FC4C02;
 
   /* ── Geometry, easing, and the two rings ──────────────────────────────────
      FOCUS_RING is the instrument's and is what :focus-visible spends below.

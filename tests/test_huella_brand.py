@@ -115,12 +115,26 @@ def _source() -> str:
 
 
 def prose() -> list[str]:
+    """Every sentence brand.py writes about itself: the module's docstring, each function's
+    and class's, and every comment.
+
+    The function docstrings are here because they state ratios too — `tagline()` says
+    `SUB on INK 6.04:1` — and a scan that read only `brand.__doc__` left every one of them
+    unchecked. A figure nothing recomputes is indistinguishable from an invented one whatever
+    kind of string it is written inside.
+    """
+    tree = ast.parse(_source())
+    docstrings = [
+        ast.get_docstring(node) or ""
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
     comments = [
         token.string.lstrip("#").strip()
         for token in tokenize.generate_tokens(io.StringIO(_source()).readline)
         if token.type == tokenize.COMMENT
     ]
-    return [brand.__doc__ or "", *comments]
+    return [*docstrings, *comments]
 
 
 def imported() -> set[str]:
@@ -355,9 +369,12 @@ class TestTheMarkPaintsOnlyWithMeasuredTokens:
         }
         assert not painted & red, (
             f"{sorted(painted & red)} is in the lockup and belongs to theme.UNCERTAINTY.\n"
-            "Red in Huella says 'do not lean on what is on screen' — it is the confidence of\n"
-            "the answer, never the health of the process. A red pip would say the advice is\n"
-            "thin when what it meant was that a key is missing."
+            "Red in Huella says 'do not lean on what is on screen', and it covers three\n"
+            "states: a window too thin or too stale to reason from, a check that ran and\n"
+            "failed, and a turn that broke. A key that was never configured is none of the\n"
+            "three — nothing has been asked yet and nothing has gone wrong — so the resting\n"
+            "degraded pip is amber, 'usable with reservations'. A red one would report a\n"
+            "turn that broke before there was a turn."
         )
 
     def test_every_ratio_this_file_states_is_the_one_its_colours_measure(self) -> None:
