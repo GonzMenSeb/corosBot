@@ -16,8 +16,10 @@ from typing import Any
 
 import httpx
 import pytest
+from google import genai
+from google.genai import errors, types
 
-from coros_core import catalog, ucp
+from coros_core import capability, catalog, gemini, ucp
 from coros_core.money import major_string_to_minor
 
 FACTS = 'AGENTS.md "load-bearing facts"'
@@ -201,4 +203,151 @@ class TestProductTypeCannotIdentifyAWatch:
             f"catalog.map_product no longer carries product_type through untouched. {FACTS} "
             "says it passes through empty for PACE 4 unchanged. Update AGENTS.md and this test "
             "together."
+        )
+
+
+class TestTheSdkBreaksOnABareFunctionDeclaration:
+    """google-genai 2.14.0 raises `AttributeError` from inside itself, before any HTTP
+    call, when `tools=` holds a `FunctionDeclaration` instead of a `Tool`. It costs no
+    network to pin, and it is the reason `gemini.as_tools()` exists — if a release ever
+    accepts the bare shape, the wrapper becomes optional, not wrong."""
+
+    def _client(self) -> Any:
+        # Never sends: the shape error is raised while building the request. A real key
+        # here would still not reach Google.
+        return genai.Client(api_key="not-a-key", http_options=types.HttpOptions(timeout=gemini.TIMEOUT_MS))
+
+    @pytest.mark.parametrize("shape", ["typed", "dict"])
+    def test_a_bare_declaration_never_reaches_the_wire(self, shape: str) -> None:
+        declaration = types.FunctionDeclaration(name="list_collections", description="live COROS collections")
+        config: Any = (
+            types.GenerateContentConfig(tools=[declaration]) if shape == "typed" else {"tools": [declaration]}
+        )
+
+        held = self._client()
+        with pytest.raises(AttributeError) as caught:
+            held.models.generate_content(model=gemini.MODEL, contents="hola", config=config)
+
+        assert "function_declarations" in str(caught.value), (
+            f"google-genai no longer rejects a bare FunctionDeclaration ({caught.value}). {FACTS} "
+            "says the Tool wrapper is mandatory and that this fails before any HTTP call. Update "
+            "AGENTS.md, gemini.as_tools and this test together."
+        )
+
+    def test_a_client_nobody_holds_has_already_closed_its_transport(self) -> None:
+        """`genai.Client.__del__` closes the httpx transport, and `client.models` does not
+        keep the client alive — so the wrapper has to be held. This is why `gemini.client`
+        is `lru_cache`d and why `generate()` binds the client rather than `.aio.models`."""
+        with pytest.raises(RuntimeError) as caught:
+            self._client().models.generate_content(model=gemini.MODEL, contents="hola")
+
+        assert "has been closed" in str(caught.value), (
+            f"a dropped genai.Client no longer closes its transport (got {caught.value!r}). "
+            f"{FACTS} says it does, which is what the lru_cache in gemini.client is holding "
+            "open. Update AGENTS.md and this test together."
+        )
+
+    @pytest.mark.live
+    def test_the_wrapper_is_the_shape_that_gets_as_far_as_the_credential(self) -> None:
+        """Marked live because proving the request was *built* means letting it leave. It
+        spends no quota — the key is deliberately invalid."""
+        declaration = types.FunctionDeclaration(name="list_collections", description="live COROS collections")
+        config = types.GenerateContentConfig(tools=gemini.as_tools([declaration]))
+        held = self._client()
+
+        with pytest.raises(errors.ClientError) as caught:
+            held.models.generate_content(model=gemini.MODEL, contents="hola", config=config)
+
+        assert caught.value.code == 400, (
+            "the wrapped shape no longer gets as far as being rejected for a bad API key "
+            f"(got {caught.value}). That 400 is what proves the request was built, not refused "
+            "locally. Update AGENTS.md and this test together."
+        )
+
+
+class TestTheCyclingRangeIsTwoSensorsAndNeitherMeasuresPower:
+    """The whole reason `capability.py` has a `no_product` dead end. COROS Colombia's
+    cycling range is a cadence sensor and a speed sensor; no product in the feed measures
+    power, so a power search can only ever end empty. Offline over the fixture — the live
+    half rides `tests/test_catalog.py`'s single feed fetch rather than opening a second."""
+
+    POWER_TOKENS = ("potenci", "power", "vatio", "watt")
+
+    def _feed(self) -> list[dict[str, Any]]:
+        return json.loads((REPO / "fixtures" / "products.json").read_text())["products"]
+
+    def test_nothing_in_the_catalogue_is_a_power_meter(self) -> None:
+        named = [
+            p["handle"]
+            for p in self._feed()
+            if any(t in f"{p['title']} {p['handle']}".lower() for t in self.POWER_TOKENS)
+        ]
+        assert named == [], (
+            f"products naming power now exist: {named}. {FACTS} and capability.py's "
+            "`cycling_power` dead end both say COROS Colombia sells none — if one appeared, "
+            "the need moves from DEAD_ENDS to MAP. Update AGENTS.md, capability.py and this "
+            "test together."
+        )
+
+    def test_the_two_bike_sensors_are_cadence_and_speed(self) -> None:
+        sensors = sorted(p["handle"] for p in self._feed() if "bike" in p["handle"])
+        assert sensors == ["coros-bike-cadence-sensor", "coros-bike-speed-sensor"], (
+            f"the bike range is now {sensors}. {FACTS} pins these two — update AGENTS.md and "
+            "this test together."
+        )
+
+    def test_the_cadence_sensor_is_out_of_stock_and_that_is_a_stock_answer(self) -> None:
+        """Recorded from the feed on 30 Jul 2026. A restock is expected and is NOT a
+        contract break, which is why this reads the frozen fixture: the fact being pinned
+        is that `cycling_cadence` stays *capable* while out of stock, so the person hears
+        "agotado" from check_stock and never "COROS no hace eso" from the capability map."""
+        cadence = next(p for p in self._feed() if p["handle"] == "coros-bike-cadence-sensor")
+        speed = next(p for p in self._feed() if p["handle"] == "coros-bike-speed-sensor")
+
+        assert not any(v["available"] for v in cadence["variants"])
+        assert any(v["available"] for v in speed["variants"])
+        assert "cycling_cadence" in capability.MAP and "cycling_cadence" not in capability.DEAD_ENDS, (
+            "an out-of-stock product became a capability dead end. Stock is check_stock's "
+            f"answer; {FACTS} says COROS makes this sensor. Update AGENTS.md and this test "
+            "together."
+        )
+
+    def test_neither_sensor_speaks_ant_plus(self) -> None:
+        for handle in ("coros-bike-cadence-sensor", "coros-bike-speed-sensor"):
+            product = next(p for p in self._feed() if p["handle"] == handle)
+            assert "ANT+" in product["body_html"], f"{handle} stopped mentioning ANT+ at all"
+            assert "No compatible con dispositivos ANT+" in product[
+                "body_html"
+            ] or "no es compatible" in product["body_html"].lower(), (
+                f"{handle} no longer denies ANT+. {FACTS} and capability.py's `ant_plus` dead "
+                "end rest on COROS's own sentence — update AGENTS.md and this test together."
+            )
+
+    QUESTION = "¿El POD 2 mide la potencia de funcionamiento?"
+
+    def test_coros_denies_running_power_in_its_own_words(self) -> None:
+        pod = next(p for p in self._feed() if p["handle"] == "coros-pod-2")
+        prose = " ".join(catalog.strip_untrusted(pod["body_html"], 40_000).split())
+        assert self.QUESTION in prose, (
+            f"the POD 2 FAQ no longer asks about running power. {FACTS} quotes it as the "
+            "evidence behind capability.py's `running_power` dead end."
+        )
+        answer = prose.split(self.QUESTION, 1)[1][:120]
+        assert "No, el POD 2 usa Effort Pace" in answer, (
+            f"COROS's answer changed: {answer!r}. If the POD 2 now measures running power, "
+            "`running_power` moves out of DEAD_ENDS. Update AGENTS.md, capability.py and this "
+            "test together."
+        )
+
+    def test_that_denial_never_reaches_the_model(self) -> None:
+        """Why the dead end has to be code. COROS answers this question itself, 4 916
+        characters into a 36 KB BeeFree template — and `DESCRIPTION_CHARS` is 400, so the
+        prose a model sees stops long before the FAQ. A model reasoning from the catalogue
+        cannot know the POD 2 does not measure running power."""
+        pod = catalog.map_product(next(p for p in self._feed() if p["handle"] == "coros-pod-2"))
+        assert self.QUESTION not in pod.description
+        assert "Effort Pace" not in pod.description, (
+            f"the POD 2's FAQ now survives truncation. {FACTS} records that it does not, "
+            "which is the reason capability.py carries the denial as a typed dead end "
+            "instead of trusting retrieval to surface it."
         )

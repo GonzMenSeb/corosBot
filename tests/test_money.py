@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from coros_core.guardrails import check_budget, check_buy_nothing
+from coros_core.models import AdviceItem, Budget, CatalogProduct, CatalogVariant
 from coros_core.money import (
     MINOR_PER_MAJOR,
     MoneyError,
@@ -186,3 +188,34 @@ class TestThereIsExactlyOneConversionPoint:
             "minor_to_display instead. A second conversion point is how a watch ends up\n"
             "quoted at a hundred times its price."
         )
+
+
+def test_cop_minor_units_never_reach_the_screen_unconverted() -> None:
+    """`minor_to_display` groups digits in runs of three; a raw minor unit never does.
+    Four or more consecutive digits in anything a guardrail hands back for a person to
+    read is the hundred-fold bug wearing a different costume — checked here across every
+    guardrail that puts a price into prose, not just the one it was first caught in."""
+    sold_out = CatalogProduct(
+        product_id="9001",
+        handle="coros-nomad",
+        title="COROS NOMAD",
+        product_url="https://coros.com.co/products/coros-nomad",
+        variants=(CatalogVariant(variant_id="n1", label="Negro", price_minor=PACE_4_MINOR, available=False),),
+    )
+    advice_item = AdviceItem(
+        product_id="9001",
+        title="COROS NOMAD",
+        product_url="https://coros.com.co/products/coros-nomad",
+        variant_id="n1",
+        price_minor=PACE_4_MINOR,
+    )
+
+    screens = [
+        check_budget([advice_item], Budget(max_total_minor=50_000_000)).message,
+        check_budget([advice_item], Budget()).message,
+        check_budget([advice_item], Budget(max_total_minor=150_000_000)).message,
+        check_buy_nothing([sold_out]).detail,
+        check_buy_nothing([sold_out], budget=Budget(max_total_minor=1)).detail,
+    ]
+    for text in screens:
+        assert not re.search(r"\d{4,}", text), f"a raw price leaked unconverted: {text!r}"

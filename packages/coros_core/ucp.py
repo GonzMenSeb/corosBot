@@ -21,6 +21,10 @@ Load-bearing facts encoded here (`AGENTS.md`) — these look like bugs and are n
 Divergence from DecaBot's `commerce/ucp.py`: there, `initialize` and `tools/list`
 always fail with -32001 and the handshake is skipped. Here they both succeed once the
 profile is passed. Nothing depends on the handshake either way, so it is not called.
+
+Every call and every refusal emits. Argument NAMES are recorded and values are not: a
+cart id, an address and an email all travel in the values, and `evidence.py`'s bundle is
+an artifact that gets pasted into a model.
 """
 
 from __future__ import annotations
@@ -31,6 +35,8 @@ import time
 from typing import Any
 
 import httpx
+
+from coros_core.trace import emit
 
 EP = "https://coros.com.co/api/ucp/mcp"
 
@@ -127,6 +133,24 @@ async def _send(payload: dict[str, Any]) -> httpx.Response:
             _last_send = time.monotonic()
 
 
+def _refused(method: str, r: httpx.Response, *, retrying: bool) -> None:
+    emit(
+        "ucp.rate_limited",
+        {"method": method, "retry_after": r.headers.get("Retry-After"), "retrying": retrying},
+        "error",
+    )
+
+
+def _failed(
+    method: str, detail: str, *, tool: str = "", code: int | None = None, status: int = 0
+) -> None:
+    emit(
+        "ucp.tool_error",
+        {"method": method, "tool": tool, "code": code, "status": status, "detail": detail},
+        "error",
+    )
+
+
 def _envelope(r: httpx.Response) -> dict[str, Any] | None:
     try:
         body = r.json()
@@ -146,45 +170,65 @@ async def rpc(
         "method": method,
         "params": {**params, "arguments": {"meta": AGENT_META, **(arguments or {})}},
     }
+    tool = str(params.get("name") or "")
 
     r = await _send(payload)
     if r.status_code == 429:  # never sleep on Retry-After: it is far longer than a turn
         engage_pacing()
+        _refused(method, r, retrying=True)
         r = await _send(payload)  # a trickle is served even mid-lockout
         if r.status_code == 429:
+            _refused(method, r, retrying=False)
             raise UcpRateLimited(r.headers.get("Retry-After"))
 
     body = _envelope(r)
     if body is not None and "error" in body:  # -32001/-32000 ride on 422 and 403
         error = body["error"]
         code = error.get("code") if isinstance(error, dict) else None
+        _failed(method, str(error)[:300], tool=tool, code=code, status=r.status_code)
         raise UcpToolError(error, code)
-    r.raise_for_status()
+    if r.is_error:
+        _failed(method, f"HTTP {r.status_code} — {r.text[:200]!r}", tool=tool, status=r.status_code)
+        r.raise_for_status()
     if body is None or not isinstance(body.get("result"), dict):
-        raise UcpToolError(
-            f"{method}: HTTP {r.status_code} with no JSON-RPC result — {r.text[:200]!r}"
-        )
+        detail = f"{method}: HTTP {r.status_code} with no JSON-RPC result — {r.text[:200]!r}"
+        _failed(method, detail, tool=tool, status=r.status_code)
+        raise UcpToolError(detail)
     return body["result"]
 
 
 async def call_ucp(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    started = time.monotonic()
     result = await rpc("tools/call", name=tool, arguments=args)
+
+    def failed(detail: str) -> UcpToolError:
+        _failed("tools/call", detail[:300], tool=tool)
+        return UcpToolError(detail)
 
     content = result.get("content") or [{}]
     block = content[0] if isinstance(content[0], dict) else {}
     if "text" not in block:
-        raise UcpToolError(f"{tool}: result carried no text block — {str(result)[:200]}")
+        raise failed(f"{tool}: result carried no text block — {str(result)[:200]}")
     text = block["text"]
 
     if result.get("isError"):  # HTTP 200, and sometimes a bare sentence rather than JSON
-        raise UcpToolError(f"{tool}: {str(text)[:400]}")
+        raise failed(f"{tool}: {str(text)[:400]}")
 
     try:
         data = json.loads(text)
     except ValueError as exc:
-        raise UcpToolError(f"{tool}: content was not JSON — {str(text)[:200]!r}") from exc
+        raise failed(f"{tool}: content was not JSON — {str(text)[:200]!r}") from exc
     if not isinstance(data, dict):
-        raise UcpToolError(f"{tool}: decoded to {type(data).__name__}, expected an object")
+        raise failed(f"{tool}: decoded to {type(data).__name__}, expected an object")
 
     data.pop("ucp", None)  # ~4 KB of protocol capabilities, echoed on every call
+    emit(
+        "ucp.call",
+        {
+            "tool": tool,
+            "arguments": sorted(args),  # names only — see the module docstring
+            "ms": round((time.monotonic() - started) * 1000),
+            "keys": sorted(data),
+        },
+    )
     return data

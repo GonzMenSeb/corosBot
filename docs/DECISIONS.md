@@ -182,3 +182,170 @@ live products on 30 Jul 2026; the `live` half of `tests/test_devices.py` is what
 The plan for this module counted six devices as not sold locally. It is ten: the feed also
 carries straps for the PACE 2 and the APEX Pro with no watch SKU, and names the gen-1 APEX
 and VERTIX in the chargers' copy. Corrected in `AGENTS.md` in the same commit as the table.
+
+### 2026-07-30 · Guardrails verify against the feed, not against the candidate
+
+The obvious shape for `check_stock` is to read `available` off the item the model proposed.
+That check passes whenever the model is wrong in the one way that matters. So every check in
+`packages/coros_core/guardrails.py` takes the catalog snapshot as a second argument and
+re-derives the answer from it: `check_provenance` rebuilds the whole `AdviceItem` from the
+feed and keeps only the model's `rationale` and `satisfies`, recording what it claimed as a
+`FieldMismatch` rather than arguing with it; `check_stock` looks the variant up and ignores
+any availability the candidate asserted. Verification through an independent code path is
+the point — a check that reads the thing it is checking is a prompt with extra steps.
+
+Two shapes fall out of that. Ambiguity is a question, never a pick: a product with two
+variants and none named is dropped rather than resolved to the first, matching
+`devices.straps_for`, and matching the one live size mistake DecaBot made with a stage that
+chose. And a price in prose is compared as a number against the set the code computed, so
+`"$1.099.000"` and `"$1099000"` are one price and `"$980.000"` is a claim.
+
+### 2026-07-30 · An absent watch has nowhere to put a substitute
+
+Ten of the fourteen devices in the registry are sold in Colombia as straps and not as
+watches, so a search for a VERTIX 2 returns six real products and none of them is a watch.
+The failure mode is not refusing — it is answering with a PACE 4 and letting the swap read
+as an answer. `UnavailableDevice` therefore has no `alternative`, `instead`, `closest` or
+`replacement` field, its two sentences are templates over that one device's own name, and
+the cleared path is a separate model whose `is_available: Literal[True]` cannot be
+constructed for a device the registry marks absent. The guarantee is the absence of a field,
+which survives a careless edit in a way a rule in a prompt does not.
+
+Finding the devices needed a scan `devices.resolve` does not offer: it answers for a whole
+string and returns one device, so "compara el VERTIX 2 con el PACE Pro" loses one.
+`devices_named()` walks token windows and asks repeatedly, and accepts a window only when
+extending it by one token still resolves to the same device. Without that guard "APEX 5"
+shrinks to the window "apex" and comes back as the gen-1 APEX — the exact substitution
+`devices._names_this_device` was written to refuse. Measured against all 45 live products:
+zero invented devices, and every locally-sold watch found in its own title.
+
+### 2026-07-30 · Colombian price text is parsed by locale and fails closed
+
+`minor_to_display` prints `$1.099.000`, so that is the form the model sees and the form
+`find_unbacked_claims` reads: `.` groups thousands, `,` is the decimal mark. A US-formatted
+`$1,099,000` is unreadable under that rule and comes back `None`, which flags it as an
+unbacked claim and scrubs it. Guessing would be worse than scrubbing: the two readings of
+that string differ by a factor of a thousand. All parsing goes through
+`money.major_string_to_minor`, so `guardrails.py` contains no rescaling of its own and the
+source scan in `tests/test_money.py` stays true.
+
+Verified before shipping: the claim patterns produce **zero** false positives when each of
+the 24 described products in `fixtures/products.json` is checked against its own
+description, and tampering with a real spec figure — `42mm` to `49mm` — is caught.
+
+### 2026-07-30 · `trace.py` lands as the ring only
+
+`guardrails.py` cannot satisfy "every verdict emits at `level="guardrail"`" without an
+`emit`, so the ring buffer, `TraceEvent` and `reset()` ship with it. Per-session sink
+binding across `asyncio.create_task()`, the storefront and UCP instrumentation, and the
+evidence bundle are deliberately not here; they arrive with `evidence.py` in this same PR.
+
+### 2026-07-30 · The evidence bundle reads the trace, not the agent
+
+A stage cannot certify itself, so `evidence.build()` takes the advice and the turn's trace
+and nothing else. A check that emitted no event did not run, a recommendation missing a
+required check is `accepted=False`, and the only way to make a check appear is to call the
+function in `guardrails.py` that emits it. That is also how the bundle catches the failure
+that is invisible from inside a prompt: an item the stock check rejected, or a device the
+local-availability check named as not sold in Colombia, appearing in the advice anyway. The
+answer is blocked with the product id in the reason, not softened into a caveat.
+
+Two readings are deliberately not the obvious ones. **An outcome is about the advice
+agreeing with the verdict, not about the verdict being good news** — an over-budget
+selection reported as over budget is a `pass` with the overage carried as a risk, because
+killing the honest bad answer is the failure mode and not the goal. And **silence is not a
+pass**: `scrub_prose` emits only when it excises something, so no `guardrail.prose` event
+means either clean prose or prose nobody scrubbed, and the bundle reports that as an
+untested region rather than resolving it in whichever direction flatters the run. Each
+check declares what it verifies, what it cannot verify, and what confidence it provides
+(KB `Code As Agent Harness.pdf` §5.2.2), and the assumptions carry `held=None` for the ones
+nothing re-derived — "unchecked" is not the same claim as "true" (§5.2.4).
+
+### 2026-07-30 · A trace payload is stored as JSON text
+
+The bundle's verdicts are only evidence if nobody can rewrite them afterwards, and a frozen
+dataclass holding a `dict` is not frozen — the same leak `models.py` documents for a frozen
+model holding a `list`. So a payload is serialised at `emit()` and rebuilt on every read:
+callers cannot reach the record, readers cannot edit it, and a value JSON cannot represent
+is written as its `str()` rather than raising, because an observability layer that can take
+down the run it observes is worse than none. The cost is that an int-keyed payload comes
+back string-keyed; nothing emits one. `dropped()` counts what the bounded ring evicted, and
+the bundle reports the loss — a bounded log is fine, a bounded log that reads as complete is
+not.
+
+### 2026-07-30 · Instrumentation carries counts and names, never the text
+
+`catalog.unavailable` is emitted inside `CatalogUnavailable.__init__` rather than at the six
+raise sites, so a new failure path cannot be added without a trace event. `strip_untrusted`
+emits only when it actually removed an injected segment, and carries how many segments and
+how many characters — not the segment. `call_ucp` records argument NAMES and never values.
+Both for the same reason: an evidence bundle is an artifact a human pastes into a model, so
+a trace that quotes the injection verbatim launders it back into a prompt, and one that
+quotes an argument leaks whatever the argument was.
+
+### 2026-07-30 · One door to the model, and it corrects the shapes it is handed
+
+`generate()` in `packages/coros_core/gemini.py` is the only place a Gemini request is issued,
+the only place a `genai.Client` is built, and the only place the model name is spelled. Three
+AST scans in `tests/test_gemini.py` enforce that, for the reason `ucp.py` has its own scan: a
+second call site brings its own retry policy and its own share of a quota that Brújula, Huella
+and DecaBot all draw from. `model` defaults to `gemini.MODEL`, so an upgrade is one line rather
+than a grep.
+
+Two shapes are corrected rather than trusted, because both fail as an `AttributeError` or a
+`RuntimeError` from inside google-genai — errors that read as our bug and point at no fix. A
+bare `types.FunctionDeclaration` in `tools=` is wrapped by `as_tools()`; the config is
+`model_copy`d rather than edited, since module-level configs are shared between turns and a
+normaliser that writes to its caller's object is a second writer to something everything reads.
+And a `genai.Client` nobody holds closes its own transport in `__del__` while `client.aio.models`
+keeps working — so the client is `lru_cache`d and `generate()` binds the client, not the models
+object, for the whole ladder.
+
+Diverging from DecaBot on purpose: no key pool, no `bind_key()`, no `GEMINI_PUBLIC_KEYS`. That
+machinery exists there to spread a QR-code audience across keys; here the 29 Jul decision to
+reuse one credential makes it dead code, and dead auth machinery is worse than none. What the
+shared quota does earn is a `model.call` trace event carrying token counts — counts only, never
+the text, the same rule instrumentation follows everywhere in this repo — because burn against
+one shared quota is otherwise invisible until it runs out. Giving up after four attempts emits
+`model.failed` before re-raising, so a turn that died of quota is distinguishable from a crash.
+
+### 2026-07-30 · A capability the store does not have is a typed dead end
+
+`packages/coros_core/capability.py` answers one question before retrieval runs: is there any
+tool here that could serve this request? `capable_tools()` is the pure map; `check_capability()`
+turns an empty answer into a typed `DeadEnd` and emits `guardrail.capability`. The failure being
+designed out is the one KB `docs/lifeseek/SPEC.md` §4.2 calls the most dangerous silent failure
+there is — an empty result that reads as "COROS has nothing for you" when the truth is "nothing
+here could have looked". `CapabilityVerdict` makes it structural rather than disciplinary: no
+tools and no reason is not a constructible object, so the empty case cannot travel.
+
+The COROS-specific reason this earns a module. COROS Colombia's entire cycling range is a cadence
+sensor and a speed sensor; nothing in the 45-product feed measures power, in cycling or in
+running. Ask retrieval for a power meter and it returns the speed sensor — a real product, in
+stock, at a real price, for a capability it does not have. That is the substitution
+`check_local_availability` bans for devices, arriving through a door that check does not watch,
+and it is worse than an absent watch because no COROS product will ever satisfy it.
+
+Three distinctions inside it are load-bearing, and each one is a different answer to the person:
+
+- **Capability is not availability.** The cadence sensor is out of stock, so `cycling_cadence`
+  stays *capable* and `check_stock` reports the shelf. A dead end there would tell someone COROS
+  does not make a product it makes and will restock. `DeadEnd.outcome` is restricted to the two
+  escalating outcomes, so `UNAVAILABLE` cannot be dressed as a capability verdict at all.
+- **A person is not a missing tool.** `create_cart`/`create_checkout` are withheld by design, so
+  `place_order` is `NEEDS_HUMAN`. `NO_CAPABILITY` there would be a lie about the store. `WITHHELD`
+  names them as strings precisely so the omission is auditable instead of being a silence someone
+  re-adds; a test asserts no `ToolId` shares those values.
+- **A need nobody declared is a dead end, not a wildcard.** `need` is a normalised `str`, not the
+  `Need` literal: it arrives from a model, and a typo has to fail closed rather than raise out of
+  the gate meant to catch it. No alias table translates Spanish synonyms — "potenciómetro" is
+  ambiguous between the two power needs COROS answers differently, and picking one is a guess.
+
+The `running_power` dead end is the case that proves the map has to be code rather than a prompt
+line or a retrieval hope. COROS answers that exact question itself, in the POD 2's own FAQ — and
+4 916 characters into a 36 KB BeeFree template, where `DESCRIPTION_CHARS = 400` truncation means
+no model ever sees it. The vendor's denial exists, and retrieval structurally cannot deliver it.
+
+Diverging from DecaBot, which has no equivalent: its catalogue is wide enough that "nothing
+matched" is nearly always the truth. COROS Colombia sells 45 products, so the gap between "we
+found nothing" and "there is nothing to find" is most of the catalogue.

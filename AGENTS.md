@@ -166,6 +166,21 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   Roles and tags are re-checked after unescaping, because `&lt;system&gt;` is a role
   marker too. Injection patterns cover Spanish as well as English: the storefront is
   Spanish and so is the likeliest attempt.
+- **The whole cycling range is two sensors, and neither measures power.** `COROS Bike
+  Cadence Sensor` and `COROS Bike Speed Sensor`, $159.000 each; the cadence one is **out
+  of stock** and the speed one is not (30 Jul 2026). No product in the feed — none of the
+  45 — measures power, in cycling or in running, and no title or handle names one. So
+  `cycling_power` is a `capability.py` dead end while `cycling_cadence` stays **capable**:
+  out of stock is `check_stock`'s answer about a product COROS makes and will restock, and
+  collapsing the two says COROS does not make a cadence sensor. Both sensors pair over
+  Bluetooth only — **"No compatible con dispositivos ANT+"**, their own words, which is
+  what the `ant_plus` dead end rests on.
+- **COROS denies running power itself, 4 916 characters past where anything can read it.**
+  The POD 2's FAQ asks "¿El POD 2 mide la potencia de funcionamiento?" and answers "No, el
+  POD 2 usa Effort Pace" — inside the 36 KB BeeFree template, and `DESCRIPTION_CHARS` is
+  400, so the sanitised prose stops long before it. The vendor's denial exists and
+  retrieval structurally cannot deliver it, which is why `running_power` is a typed dead
+  end carrying the sentence rather than a hope that the model reads far enough.
 - **The blog: `blogs/blog.json` is 404, and `blogs/blog.atom` serves 30 entries and
   ignores `?page=`.** `?page=2` returns the identical 30 ids. The site really has **58**
   articles under `/blogs/blog/` — that is `sitemap_blogs_1.xml`, and the 58–60 figure in
@@ -188,6 +203,48 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   `"InlineSkate"`, `"RollerSki"`, `"Skateboarding"`, `"Snowboarding"`, `"Snowshoeing"`,
   `"Trail Run"`, `"TrailRun"`, `"TrackRun"`, `"Run"`, `"Trail Run"`, …). The model must
   not invent categories.
+
+### Gemini and the model client (`packages/coros_core/gemini.py`)
+
+All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
+
+- **Model `gemini-3.6-flash`, present in the live model list** as `models/gemini-3.6-flash`
+  under the shared credential. Spelled once, in `gemini.MODEL`; `generate()` defaults to it
+  so no call site repeats it, and an AST scan in `tests/test_gemini.py` enforces that.
+- **`tools=` must hold `types.Tool`, not `types.FunctionDeclaration`.** A bare declaration
+  raises `AttributeError: 'FunctionDeclaration' object has no attribute
+  'function_declarations'` from *inside* the SDK, before any HTTP call, for a
+  `GenerateContentConfig` and a plain dict config alike — so it reads as a bug in our code.
+  `gemini.as_tools()` collects bare declarations into one `Tool` and `generate()` runs every
+  config through it; a `Tool`, a dict and a plain callable pass through in place. Pinned in
+  `tests/test_contracts.py`.
+- **A `genai.Client` nobody holds closes its own transport.** `Client.__del__` calls
+  `close()`, and neither `client.models` nor `client.aio.models` keeps the client alive, so
+  `genai.Client(...).models.generate_content(...)` in one expression raises
+  `RuntimeError: Cannot send a request, as the client has been closed.` — never an API
+  error, never a code a caller can branch on. This is why `gemini.client` is `lru_cache`d
+  and why `generate()` binds the *client* for the whole retry ladder instead of
+  `.aio.models`. Do not "simplify" either one.
+- **`HttpOptions.timeout` is milliseconds.** `120_000` is two minutes. Without it a stalled
+  request hangs the turn forever, which from the outside is a crash.
+- **`generate_content` takes `model`, `contents`, `config` and nothing else** — there is no
+  `previous_interaction_id`. History is threaded client-side as `list[types.Content]`.
+- **429 is ordinary here, not exotic.** One per-project quota is shared by Brújula, Huella
+  and DecaBot (`vault_decabot_gemini_api_key`, by decision — there is no key pool and no
+  `bind_key()`, unlike DecaBot, which rotates one for a QR-code audience). `gemini-3.6-flash`
+  also answers 503 "experiencing high demand" intermittently. `generate()` retries
+  `{429, 500, 503, 504}` on a `(1.0, 3.0, 7.0)` s ladder — four attempts total — and then
+  re-raises the SDK error with `.code` intact, because which refusal it was decides what the
+  person is told. `errors.ClientError` and `errors.ServerError` both carry `.code`/`.status`.
+- **`.env` is loaded from two named absolute roots, and finding neither is not an error.**
+  `load_dotenv()` with no argument resolves against the *calling* file and silently finds
+  nothing. `gemini.env_candidates()` returns the repo root and — one directory shallower —
+  the flattened `/app` layout the image uses. A container is handed its environment by
+  docker's `env_file` and ships no `.env` at all.
+- For the app-layer Gemini facts this repo has not re-verified — `grounding_metadata` being
+  `None`, why built-in search may never share a request with custom tools, and
+  `response_schema` returning a typed `response.parsed` — read DecaBot `AGENTS.md:196-215`.
+  **Do not restate them here.**
 
 ### Rate limits and pacing
 
@@ -246,8 +303,21 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
   `audit(products)` re-derives the whole join against the live feed so the registry never
   self-certifies. Nothing infers a fit from a width, a spec from a handle, or a device
   from a title outside `resolve()`.
+- **Nothing issues a model request except `gemini.py`.** `generate()` is the only call site,
+  `gemini.client()` the only constructor, and `gemini.MODEL` the only spelling of the model
+  name. Three AST scans in `tests/test_gemini.py` enforce all three — a docstring may name
+  the model, code may not. A second call site would bring its own retry ladder and its own
+  share of a quota three deployments already share.
 - **`create_cart` and `create_checkout` are not exposed as model tools.** Human-in-the-loop
-  is enforced by *absence* from the tool list, not by a prompt instruction.
+  is enforced by *absence* from the tool list, not by a prompt instruction. They are named
+  in `capability.WITHHELD` as plain strings so the omission is auditable rather than a
+  silence, and a test asserts no `ToolId` carries either value — an id that cannot be
+  spelled cannot be offered. `ucp.call_ucp()` can still reach both from a click handler.
+- **Every tool name is spelled once, in `capability.ToolId`, and the map is the only
+  authority on which one can serve a request.** Both apps' schemas are written against
+  those ids; `SURFACES` says which app exposes each. `capable_tools()` returning `()` is
+  never a search result — `check_capability()` turns it into a typed dead end, and
+  `CapabilityVerdict` refuses to hold an empty tool list with no reason attached.
 - **Nothing retrieves from the catalog except `catalog.py`, and catalog.py never caches.**
   Live retrieval every turn; `fixtures/` is for offline development only and is never read
   by the running app.
@@ -258,11 +328,37 @@ and **25 Jul 2026** (Strava). **These look like bugs and are not.** Anything her
 is a guarantee.** Every check is deterministic code between the model and the world,
 and every one emits a trace event at `level="guardrail"`.
 
-`LocalAvailabilityVerdict.is_available = Literal[True]` means an out-of-stock or
-region-blocked item cannot be represented in a recommendation at all — the guardrail is
-enforced by the type system. `BuyNothingVerdict` means "buy nothing" is a reachable typed
+`LocalAvailabilityVerdict.is_available = Literal[True]` means a region-blocked device
+cannot be represented as a cleared one at all — the guardrail is enforced by the type
+system, not by a branch. `BuyNothingVerdict` means "buy nothing" is a reachable typed
 outcome, not prose that slipped through. `ProvenanceVerdict` proves a price matches the
 live feed; an unbacked `"$X COP"` claim is rejected.
+
+| check | trace event | what it guarantees |
+|---|---|---|
+| `check_provenance` | `guardrail.provenance` | every field of a rendered item is rebuilt from the feed. The model contributes a product id, a variant id and its reasoning; a title, URL or price it also sent is recorded as a `FieldMismatch` and then discarded |
+| `check_stock` | `guardrail.stock` | availability is read out of the feed, never off the candidate. A model that labels a sold-out variant `available: true` changes nothing |
+| `check_budget` | `guardrail.budget` | integer arithmetic in minor units, done in code. `nothing_fits` is a different answer from `over_by`, and an empty selection under a budget is the former |
+| `check_local_availability` | `guardrail.local_availability` | an absent watch is named, never swapped. `UnavailableDevice` has no `alternative`/`instead`/`closest` field, and both its sentences are templates over one device's own name |
+| `check_buy_nothing` | `guardrail.buy_nothing` | "buy nothing" is reachable, and `retrieval_conclusive=False` keeps a 429 from being reported as "nothing fits" |
+| `find_unbacked_claims` / `scrub_prose` | `guardrail.prose` | a spec figure in prose has to appear in a retrieval-derived field. `AdviceItem.rationale` is not one of them |
+| `catalog.strip_untrusted` | `guardrail.untrusted_text` | an injected segment was removed from vendor free text. Emitted only when something was removed, and it carries counts — never the matched text, which an evidence bundle would paste back into a model |
+| `evidence.build` | `evidence.bundle` | the advice agrees with the verdicts, and every check a recommendation requires actually ran. Derived from the trace, so a stage cannot self-certify; a required check with no event means `accepted=False` |
+| `capability.check_capability` | `guardrail.capability` | a request no tool can serve is a typed `NO_CAPABILITY`, never an empty search that reads as "COROS has nothing". `CapabilityVerdict` cannot be built with no tools and no reason, and `DeadEnd.outcome` is restricted to the escalating outcomes so "out of stock" cannot be dressed as "does not exist" |
+
+Two rules inside that table are easy to undo by accident. **Ambiguity is a question, never
+a pick**: a product with two variants and none named is dropped, the same way
+`devices.straps_for` raises rather than choosing. And **`kind="discount"` never consults
+the backing text** — `compare_at_price` is deliberately unmapped, so no pre-discount number
+can reach the model at all and even a true one has no source in this pipeline.
+
+**Termination is governed by verification, never by the model deciding it is finished.**
+A turn takes `trace.mark()` before it starts, calls `evidence.build(advice,
+trace.since(mark))` before it renders, and presents nothing when `accepted` is False —
+the blocking reasons are what the person is told instead. `bind_sink()` runs **before**
+`asyncio.create_task()`: contextvars are copied at task-creation time, so the reverse
+order routes the turn's verdicts somewhere the bundle cannot see them, and a bundle that
+sees no events accepts nothing.
 
 **Attribute invention is the likeliest way to be embarrassed live.** The agent will
 not invent *products* — retrieval prevents that. It will invent *properties*: `"waterproof
@@ -294,9 +390,13 @@ rendered only from data; prose carries only reasoning.
 | `packages/coros_core/devices.py` | `tests/test_devices.py` — the offline half and the `live` audit together — plus the device and strap-width entries in this facts registry. `audit()` is what proves a row still matches the feed; run `make verify` before believing a curated change |
 | `packages/coros_core/catalog.py` | `tests/test_catalog.py` — the offline half and the `live` probes together — plus the storefront section of this facts registry |
 | `packages/coros_core/models.py` | `tests/test_models.py`, and `catalog.py`'s `map_product` if the change touches `CatalogProduct` or `CatalogVariant` |
-| any tool schema | `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
+| any tool schema | `packages/coros_core/capability.py` (`ToolId`, `SURFACES`, `MAP`), `brujula/agent/tools.py`, `brujula/agent/prompts.py`, `huella/agent/tools.py`, `huella/agent/prompts.py`, and the trace event names |
+| `packages/coros_core/capability.py` (a need, a dead end, the tool registry) | `tests/test_capability.py` + the guardrail table + the cycling-range entries in this facts registry. A need moving between `MAP` and `DEAD_ENDS` is a claim about the live catalogue: `tests/test_contracts.py` and the live probe in `tests/test_catalog.py` pin it, and both move in the same commit |
 | `packages/coros_core/ucp.py` (wire shape, error taxonomy, rate-limiting policy) | this facts registry + `tests/test_ucp.py` — the offline half and the `live` probes together |
-| a guardrail | the guardrail table + its test + the trace event |
+| `packages/coros_core/gemini.py` (the model name, the retry ladder, the tool normaliser) | `tests/test_gemini.py` + the Gemini entries in this facts registry, and the SDK pins in `tests/test_contracts.py`. Adding a call site is a change to *this* file: the AST scans reject a second one |
+| a guardrail | the guardrail table above + `tests/test_guardrails.py` + the trace event name. A check with no row in that table is a check nobody can review |
+| `packages/coros_core/trace.py` (event shape or levels) | every `emit(...)` call site, `tests/test_trace.py`, and the guardrail table's trace-event column |
+| `packages/coros_core/evidence.py` (a declared check, a required set, an assumption) | `tests/test_evidence.py` + the guardrail table. A check the bundle requires but nothing emits blocks every recommendation, so the two move together |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md` |
 | a touched-path gate in `infra/jenkins/Jenkinsfile` | `infra/jenkins/Jenkinsfile`; the two apps have separate images |
