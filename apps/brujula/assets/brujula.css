@@ -1,0 +1,446 @@
+/* Craft layer for Brújula: only what a Reflex style prop cannot express —
+   pseudo-elements, keyframes, descendant selectors for rendered markdown, and
+   the reset that stops Radix's own TextField ring drawing inside our composer.
+   Surfaces and hover states stay in theme.py / the components. */
+
+:root {
+  /* ── COROS's published values ─────────────────────────────────────────── */
+  --brujula-ink: #161d25;
+  --brujula-graphite: #404040;
+  --brujula-graphite-deep: #212121;
+  --brujula-sub: #9a9a9a;
+  --brujula-rule: #eeeee0;
+  --brujula-success: #3a8735;
+  --brujula-danger: #ea2e41;
+
+  /* ── Brújula's paper ───────────────────────────────────────────────────── */
+  --brujula-paper: #faf8f1;
+  --brujula-paper-deep: #f1ede0;
+  --brujula-card: #ffffff;
+  --brujula-quiet: #6b6659;
+  --brujula-edge: #89857a;
+
+  /* ── Brass: the accent, and the needle ───────────────────────────────── */
+  --brujula-brass: #8a5a1e;
+  --brujula-brass-deep: #5e3612;
+  --brujula-brass-soft: #f6eddc;
+  --brujula-on-dark: #ffffff;
+
+  /* ── The three answers that are not a recommendation ───────────────────── */
+  --brujula-danger-ink: #c2172e;
+  --brujula-danger-soft: #fceaea;
+  --brujula-success-ink: #2e6c2a;
+  --brujula-success-soft: #e8f1e4;
+  --brujula-warn-ink: #7a5205;
+  --brujula-warn-soft: #fbeed6;
+
+  /* ── The audit rail: a second register ────────────────────────────────── */
+  --brujula-rail-bg: #17150f;
+  --brujula-rail-bg-2: #211e15;
+  --brujula-rail-ink: #f2eee2;
+  --brujula-rail-muted: #b9b1a0;
+  --brujula-rail-brass: #e3b463;
+  --brujula-rail-danger: #ff9ba2;
+  --brujula-rail-success: #8cd08f;
+  --brujula-rail-line: rgba(242, 238, 226, 0.1);
+
+  /* ── Typography ───────────────────────────────────────────────────────── */
+  --brujula-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* ── Easing ────────────────────────────────────────────────────────────– */
+  --brujula-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  /* Exponential ease-out. Almost all of the distance is covered in the first
+     third, so the kit reads as arriving rather than as sliding into place. */
+  --brujula-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(138, 90, 30, 0.16);
+  color: var(--brujula-ink);
+}
+
+/* One focus ring for the whole app, in the brass accent. */
+:focus-visible {
+  outline: 2px solid var(--brujula-brass);
+  outline-offset: 2px;
+  border-radius: 5px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Visually hidden, still in the accessibility tree. Carries the page's only h1,
+   which must not be on screen — the header already shows the wordmark. */
+.brujula-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Off-screen until focused, then a real, visible first tab stop. */
+.brujula-skip {
+  position: absolute;
+  left: 0.75rem;
+  top: -4rem;
+  z-index: 100;
+  padding: 0.7rem 1.1rem;
+  background: var(--brujula-brass);
+  color: var(--brujula-on-dark);
+  font-weight: 700;
+  font-size: 0.9rem;
+  border-radius: 0 0 8px 8px;
+  text-decoration: none;
+  transition: top 180ms var(--brujula-ease);
+}
+
+.brujula-skip:focus {
+  top: 0;
+}
+
+.brujula-num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.brujula-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.brujula-balance {
+  text-wrap: balance;
+}
+
+/* ---------------------------------------------------------------------------
+   The one authored moment: the kit arriving.
+
+   Everything used to enter the same way — every chat bubble and every trace row
+   ran the same 340ms rise, which is not motion design, it is a default. The kit
+   landing is the payoff beat of the whole demo, so it is the only thing that gets
+   an entrance, and the entrance is worth watching: the bill resolves out of blur
+   while a clip-path wipes it open from the top. No layout property is touched.
+
+   The default rendered state is the finished one — if this never runs, the kit is
+   simply there. Nothing is invisible waiting on a script.
+   --------------------------------------------------------------------------- */
+@keyframes brujula-kit-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.985);
+    filter: blur(12px);
+    clip-path: inset(0 0 46% 0 round 14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+    clip-path: inset(0 0 0 0 round 14px);
+  }
+}
+
+@keyframes brujula-kit-follow {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.brujula-kit > :first-child {
+  animation: brujula-kit-in 660ms var(--brujula-expo) backwards;
+  will-change: transform, filter, clip-path;
+}
+
+/* The line items are the same beat continuing, not a second one competing. */
+.brujula-kit > :last-child {
+  animation: brujula-kit-follow 420ms var(--brujula-expo) 150ms backwards;
+}
+
+/* The mark's halo pulses while the model is thinking. Brass expands and fades. */
+@keyframes brujula-halo {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(138, 90, 30, 0.5);
+  }
+  55% {
+    box-shadow: 0 0 0 6px rgba(138, 90, 30, 0);
+  }
+}
+
+.brujula-halo {
+  animation: brujula-halo 1.7s ease-out infinite;
+}
+
+/* Wrong password. The card is the whole page, so the rejection has to be felt. */
+@keyframes brujula-shake {
+  10%,
+  90% {
+    transform: translateX(-2px);
+  }
+  30%,
+  70% {
+    transform: translateX(4px);
+  }
+  50% {
+    transform: translateX(-5px);
+  }
+}
+
+.brujula-shake {
+  animation: brujula-shake 420ms var(--brujula-ease) both;
+}
+
+/* Indeterminate progress rail for the running walkthrough. */
+@keyframes brujula-sweep {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(360%);
+  }
+}
+
+.brujula-track {
+  position: relative;
+  overflow: hidden;
+}
+
+.brujula-track::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
+  animation: brujula-sweep 1.6s linear infinite;
+}
+
+/* Composer: the dock draws the field, so Radix must not draw one inside it. */
+.brujula-dock .rt-TextFieldRoot,
+.brujula-dock .rt-TextFieldRoot:focus-within {
+  box-shadow: none !important;
+  background: transparent !important;
+  outline: none !important;
+}
+
+.brujula-dock input {
+  outline: none !important;
+}
+
+/* Placeholder must be readable — measured on the paper background. */
+.brujula-dock input::placeholder {
+  color: var(--brujula-sub);
+}
+
+/* Model output arrives as markdown. Radix's per-element classes are single-class
+   selectors, so these descendant rules outrank them without !important. */
+.brujula-md > *:first-child {
+  margin-top: 0;
+}
+
+.brujula-md > *:last-child {
+  margin-bottom: 0;
+}
+
+.brujula-md p {
+  margin: 0 0 0.7em;
+  line-height: 1.72;
+}
+
+.brujula-md h1,
+.brujula-md h2,
+.brujula-md h3,
+.brujula-md h4 {
+  margin: 1.5em 0 0.5em;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  color: var(--brujula-ink);
+}
+
+.brujula-md h1 {
+  font-size: 1.22em;
+}
+
+.brujula-md h2 {
+  font-size: 1.1em;
+}
+
+.brujula-md h3,
+.brujula-md h4 {
+  font-size: 1em;
+}
+
+.brujula-md ul,
+.brujula-md ol {
+  margin: 0 0 0.8em;
+  padding-left: 1.15em;
+}
+
+.brujula-md li {
+  margin: 0.3em 0;
+  line-height: 1.68;
+}
+
+.brujula-md li::marker {
+  color: var(--brujula-brass);
+}
+
+.brujula-md strong {
+  font-weight: 700;
+  color: var(--brujula-ink);
+}
+
+.brujula-md a {
+  color: var(--brujula-brass);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(138, 90, 30, 0.14);
+}
+
+.brujula-md a:hover {
+  border-bottom-color: var(--brujula-brass);
+}
+
+.brujula-md code {
+  font-family: var(--brujula-mono);
+  font-size: 0.88em;
+  background: var(--brujula-brass-soft);
+  border: 1px solid rgba(138, 90, 30, 0.24);
+  border-radius: 4px;
+  padding: 0.08em 0.32em;
+}
+
+.brujula-md hr {
+  border: 0;
+  border-top: 1px solid var(--brujula-rule);
+  margin: 1.2em 0;
+}
+
+.brujula-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(138, 90, 30, 0.18) transparent;
+}
+
+.brujula-scroll::-webkit-scrollbar {
+  width: 11px;
+}
+
+.brujula-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.brujula-scroll::-webkit-scrollbar-thumb {
+  background: rgba(138, 90, 30, 0.18);
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.brujula-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(138, 90, 30, 0.28);
+  background-clip: content-box;
+}
+
+/* The rail runs on its own dark surface, so the light-tint scrollbar it inherited
+   read as a scratch down the panel. */
+.brujula-rail .brujula-scroll {
+  scrollbar-color: rgba(227, 180, 99, 0.34) transparent;
+}
+
+.brujula-rail .brujula-scroll::-webkit-scrollbar-thumb {
+  background: rgba(227, 180, 99, 0.34);
+  background-clip: content-box;
+}
+
+.brujula-rail .brujula-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(227, 180, 99, 0.5);
+  background-clip: content-box;
+}
+
+/* ---------------------------------------------------------------------------
+   Reduced motion — an alternative, not an off switch.
+
+   The blanket `animation-duration: 0.001ms` this file used to carry destroyed
+   real feedback: the "Brújula is working" pulse, the running-demo progress bar and
+   the kit's arrival all became indistinguishable from nothing happening. Reduced
+   motion means no vestibular triggers — no travel, no scaling, no sweeping — not
+   no information. Each moment below keeps its meaning and drops its movement.
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  /* The kit still announces itself, by resolving rather than by travelling. */
+  .brujula-kit > :first-child {
+    animation: brujula-kit-in-reduced 320ms ease-out backwards;
+    will-change: auto;
+  }
+
+  .brujula-kit > :last-child {
+    animation: brujula-kit-in-reduced 260ms ease-out 90ms backwards;
+  }
+
+  @keyframes brujula-kit-in-reduced {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  /* "Working" stays legible as a steady ring instead of an expanding pulse. */
+  .brujula-halo {
+    animation: none;
+    box-shadow: 0 0 0 3px rgba(138, 90, 30, 0.45);
+  }
+
+  /* Indeterminate progress still reads as indeterminate — it breathes in place
+     instead of sweeping across, which is the part that triggers. */
+  .brujula-track::after {
+    inset: 0;
+    width: 100%;
+    background: rgba(255, 255, 255, 0.65);
+    animation: brujula-track-breathe 1.8s ease-in-out infinite;
+  }
+
+  @keyframes brujula-track-breathe {
+    0%,
+    100% {
+      opacity: 0.3;
+    }
+    50% {
+      opacity: 0.85;
+    }
+  }
+
+  /* Hover and focus feedback is a state change, not a journey. Kept, shortened. */
+  *,
+  *::before,
+  *::after {
+    transition-duration: 90ms !important;
+  }
+}

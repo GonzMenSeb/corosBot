@@ -542,3 +542,152 @@ init` — which any first run in a fresh clone triggers — seeded `apps/brujula
 `tests/test_layout.py` fails if either is committed: that requirements.txt shadows the root pins
 for anything installing from the app directory, which is an image with reflex and no
 `google-genai` in it, failing at the first model call instead of at build time.
+
+### 2026-07-30 · Brújula's palette: COROS's values, and red inverted to the refusal
+
+`apps/brujula/brujula/ui/theme.py` is anchored on the seven values coros.com.co publishes as
+CSS custom properties, and on one reading of them. Their storefront is white, black and grey,
+and its only warmth is `--color-border: #EEEEE0` — a warm ivory hairline on an otherwise
+neutral page. Brújula takes that single value as its premise: the page is paper, the type is
+COROS's own `#161d25`, and the accent is brass, a compass needle's metal. It shares no hex with
+DecaBot, because two demos on one VPS that share a palette read as one demo with two front
+doors.
+
+**Red is the refusal, which inverts COROS's own usage.** `#ea2e41` is what they spend on buy
+buttons — `.buy-btn`, `.button-primary`, `.form-launch-btn`, section headings. Here it never
+sells anything: it is reserved for "COROS Colombia no vende eso" and "no compres nada", the two
+sentences the whole guardrail layer exists to make possible. If red also meant *buy*, the
+honest refusal would arrive in the colour of a purchase. Their `--color-warning: #ff706b` is
+rejected for the same reason — a rate limit is not a refusal, and it is another red; amber
+carries that one. Neither red carries words: white on `#ea2e41` measures 4.23:1, so `DANGER`
+is the icon and the rule and `DANGER_INK` says the sentence.
+
+**Their own success green cannot carry words either.** `#3a8735` on white is 4.47:1, three
+hundredths under AA. Rather than drop COROS's value or ship type nobody can read, `SUCCESS`
+stays the tick and the fill and `SUCCESS_INK` is a darkened sibling for the words.
+
+**Barlow stands in for a licensed face.** COROS self-hosts PF Din Text Pro from their Shopify
+CDN; it is a Parachute commercial face and we cannot ship it, so the interface uses Barlow —
+the same DIN-derived skeleton, on Google Fonts. Fraunces is Brújula's own editorial serif and
+is deliberately *not* COROS's: the wordmark and the headings, nothing else. One verified
+request loads all three with latin-ext, because the whole interface is Spanish and a family
+without the accents renders "Brujula".
+
+**The ratios are enforced, not written down.** `tests/test_brujula_theme.py` recomputes every
+`TOKEN on SURFACE n.nn:1` figure in the token file from the two colours it names, and rejects
+a figure that names no colours — an unverifiable ratio is indistinguishable from an invented
+one. Each colour must also classify itself in `SURFACES`, `TYPE_ON`, `EDGE_ON` or `RULE_ONLY`;
+type clears AA on every surface it is declared on, an edge clears WCAG 1.4.11's non-text
+floor, and anything that can clear neither is `RULE_ONLY` **with the reason** — which is how
+COROS's `--color-sub-text: #9A9A9A` (2.65:1 on our paper) is kept off words for good. A last
+scan rejects a saturated red outside the refusal family, so the decision above cannot be
+undone by a later component reaching for a red button. Eleven mutation probes were run against
+these tests: lightening the muted type, falsifying a stated ratio, adding an unclassified
+colour, turning the accent red, dropping a trace level's colour, lightening the rail until a
+paper token transfers, letting DecaBot's indigo in, and five more, each failing on exactly the
+test that names it.
+
+**The rail is a second register, inverted rather than shared.** The audit rail is Brújula's
+instrument, not COROS's chrome: a warm ink slab, with secondary type tinted from the slab's own
+hue because a neutral grey on warm black reads as dust. None of the paper tokens transfer —
+`BRASS on RAIL_BG 3.10:1` — and a test asserts they still cannot, so the rail cannot quietly
+drift light enough to make `RAIL_*` look redundant.
+
+### 2026-07-30 · The mark is drawn, and its amber means the throttle rather than a replay
+
+`brujula/ui/brand.py` draws the compass — a cream dial, a bezel somebody can see, four inert
+ticks and one brass needle off north with an index mark cut into the bezel at the same bearing —
+instead of setting `rx.icon("compass")`. Two reasons, and neither is taste. An icon set's glyph
+is a stroke weight and a palette we do not control, so it cannot honour `theme.SURFACES`'s own
+reservation of BRASS for "the mark's needle", and `EDGE on BRASS_SOFT 3.17:1` is what gives the
+mark a silhouette at all — `BRASS_SOFT on CARD 1.16:1` means a dial with no bezel is invisible on
+a white header. The needle sits off north because on north it reads as an arrow pointing
+somewhere, and Brújula's claim is that it measured first. `EDGE_ON` gained `BRASS_SOFT` in the
+same commit, because a bezel is an edge somebody has to see and theme.py declares every surface
+a colour is set on.
+
+**The presence dot's amber is the storefront throttle, not a fixture replay.** DecaBot's dot is
+green on live data and amber while replaying a fixture, and the plan asked for the same three
+states. `fixtures/` is never read by the running app here, so that amber could never light: it
+says the one thing that genuinely degrades an answer instead, `State.throttled` — COROS is
+rate-limiting us and what follows came off a partial read of the catalogue. `state.py` clears
+`throttled` in its `finally`, so the amber only appears mid-turn, beside the halo rather than
+instead of it. Idle is green only when `gemini.api_key()` returns something: a green dot in front
+of a process with no key promises an answer it cannot produce, and the demo finds that out
+mid-question.
+
+**The amber pip is hollow and the other two are solid, which is a measurement and not a slip.**
+`BRASS vs WARN_INK 1.17:1` — a solid dark-amber dot and a solid brass dot are the same dot at
+7px, in the same hue family. So the throttle pip is theme.py's own throttle notice in miniature,
+`WARN_SOFT` with a `WARN_INK` rim, and it spends its ring on that rim rather than on the surface
+colour the other two use to separate from the bezel. `tests/test_brujula_brand.py` measures the
+three pips against each other and requires 25° of hue or 1.8:1 of contrast between any two —
+green and brass pass on hue at 1.32:1, and a solid amber fails on both, which is how it was
+caught. Sixteen mutation probes were run against that file, each failing on the test that names
+it: the idle dot forced green, the throttle pip made solid, the needle turned back to north, an
+inline animation on the mark, a loose hex and the refusal red on the needle, the wordmark split
+to tint its accent, the dial announced to a screen reader, a drifted ratio, and six more.
+
+**The wordmark stays one text run.** DecaBot tints the second half of its name because
+"Deca|Bot" has a seam; "Brújula" has none, and tinting the ú would cut the word into three inline
+boxes with the seam inside a kerning pair. The brass lives on the needle instead, and the only
+two-tone in the lockup is the tagline, where COROS's name is set in COROS's own
+`--color-primary-darker` and ours in QUIET — the relationship stated in type.
+
+### 2026-07-30 · The interface is checked against the palette, not just built from it
+
+`tests/test_brujula_theme.py` proves the palette measures what it claims. It cannot prove the
+interface uses it that way, and that half is where a measured palette actually fails: a token
+whose ratio was computed against `CARD` ends up on `BRASS_SOFT` in one component and nobody
+notices, because both look like "the light one". So `tests/test_brujula_ui.py` walks every
+rendered surface and resolves the pairs the way a browser does.
+
+**The walk runs over `Component.render()`, not over the component objects.** `rx.match` renders
+its cases at construction time, so an object walk loses every branch of every match in the tree
+— which would have been all four refusal panels and every per-level style on the audit rail. The
+rendered form is also what actually ships: a `css:({…})` string holding the declarations a
+browser will apply. A node's own `background` replaces what it inherited, a `_hover` background
+is a surface too so a colour on that node has to clear both, and an `rgba()` or a gradient
+resolves to no token at all — those subtrees are skipped rather than guessed at. A border is
+measured against what is BEHIND it, because an edge separates a box from the page; a border
+painted in the enclosing surface's own colour is a cutout, which is what the presence dot's ring
+needs and the only carve-out in the rule.
+
+**`EDGE_ON` gained `PAPER_DEEP` for `EDGE` and `BRASS`, measured at 3.15:1 and 5.03:1.** The page
+is a gradient into `PAPER_DEEP` — theme.py calls it "the page's lower gradient stop" and already
+declared `INK`, `GRAPHITE` and `QUIET` as type on it — but the edges every card and panel draws
+against it were never declared. Walking `app._shell()` rather than the column alone is what
+surfaced that, and the two pairs were computed with the same helper the theme's own suite
+recomputes them with. The alternative was dropping the gradient, which would have left half of
+`PAPER_DEEP`'s stated purpose dead.
+
+**Each refusal is a literal panel, selected by `rx.match` over components.** The tempting shape
+is one panel whose ink, fill and glyph are each an `rx.match` over `advice_kind`; the failure
+mode is that those three tables are independent, so an entry added to one and forgotten in
+another silently pairs an ink with a fill nobody measured it against. Written as four whole
+trees, a panel's ink is measured against that panel's own surface and against nothing else —
+`_panel()` takes both halves at once, and `_KINDS` is asserted to cover every `AdviceKind` that
+is not `recommend`, so the unnamed fallback stays unreachable.
+
+**Nothing on either surface is markdown.** DecaBot renders its model's half of the transcript
+through `rx.markdown` because its prompts answer in headings and bullet lists. Brújula's
+`prompts.py` forbids lists, prices and totals — those are cards — so every template and every
+generated reply is paragraphs, and `white_space="pre-wrap"` renders them correctly. That also
+closes a boundary rather than defending one: Reflex's markdown pulls in `rehype-raw`, so a typed
+`<img onerror=…>` would reach the DOM through the person's own bubble.
+
+**The evidence bundle's English stays on the rail.** `EvidenceBundle.blocking` holds sentences
+like "stock did not run" and `Check.detail` is the same register — engineering artifacts written
+to be read in a PR. `loop.py` already tells the person, in Spanish, which check blocked the
+answer. So the checklist renders the translated check name, outcome and a Spanish confidence
+phrase, and the raw reasons go to the audit rail, captioned as the verifier's own words. The rail
+is where that vocabulary is already at home: mono, English event names, raw payload lines. An
+AST scan asserts `State.blocking` is read by `trace_panel.py` and by nothing else — a text scan
+reported this decision's own prose, which is the failure a text scan always has here.
+
+Thirteen mutation probes were run against the new suite, each failing on the test that names it:
+words moved onto an unmeasured surface, a loose hex, a light token imported into the rail, the
+bundle's English put in the checklist, a refusal kind left without a panel, the refusal red spent
+on a rate limit, an icon-only control left unnamed, `Check.detail` rendered, a Var `class_name` on
+`rx.form`, a rail that ignores the header's height, minor units on a card, prose without its
+quote rule, and a waiting row with no live region.
