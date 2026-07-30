@@ -216,6 +216,30 @@ not need a rested IP.
   ratios; `tests/test_brujula_theme.py` recomputes every figure written in that file from
   the two colours it names, so a stale ratio fails the build rather than a review.
 
+### Brújula's mark and its presence dot (`brujula/ui/brand.py`)
+
+- **The dot's amber is the storefront throttle, not a fixture replay.** DecaBot's dot is
+  amber while replaying a fixture and the plan asked for the same; nothing here reads
+  `fixtures/` at runtime, so that amber could never light. It is wired to
+  `State.throttled` instead — COROS is rate-limiting us and the answer came off a partial
+  read — and `state.py` clears that flag in its `finally`, so the amber only ever appears
+  mid-turn, beside the halo. Do not "restore" a fixture mode to give it back its old
+  meaning without deciding where the throttle then says so.
+- **The amber pip is hollow while the green and brass ones are solid.** `BRASS vs WARN_INK
+  1.17:1` — at 7px, in the same hue family, a solid amber dot and a solid brass dot are the
+  same dot. The throttle pip is therefore theme.py's own throttle notice in miniature,
+  `WARN_SOFT` with a `WARN_INK` rim, and it spends its ring on that rim instead of on the
+  surface colour the other two use to lift off the bezel. `tests/test_brujula_brand.py`
+  requires 25° of hue or 1.8:1 of contrast between any two pips.
+- **Idle is green only when `gemini.api_key()` returns something**, read once at import.
+  A green dot in front of a process with no key promises an answer that dies at
+  `gemini.client()`.
+- **The needle sits at `BEARING = 34`, and nothing in the mark moves.** The halo on the pip
+  is the app's only ambient animation, and it is the class `bj-halo` rather than a style
+  prop so `assets/brujula.css` can swap it for a static ring under
+  `prefers-reduced-motion`. `transform` is only ever set on a `<g>`: on a shape Reflex
+  renders it into CSS, where `rotate(34 16 16)` is not valid syntax.
+
 ### Strava integration (Huella only)
 
 - **OAuth 2.0:** authorize endpoint `https://www.strava.com/oauth/authorize`, token
@@ -510,6 +534,7 @@ rendered only from data; prose carries only reasoning.
 | `apps/brujula/brujula/agent/prompts.py` (a stage, a template) | `tests/test_brujula_agent.py` — one test asserts a canned template exists for every non-advice `Intent`, so a new intent without one is a model call spent letting the model improvise a refusal |
 | `apps/brujula/brujula/state.py` (a var, a caption, the gate) | `tests/test_brujula_state.py`. A caption key must be an event something actually emits or it can never fire; a new `RequirementKey` needs a word in `_REQUIREMENT_ES` and a new declared check needs one in `_CHECK_ES`, or the rail shows an English enum to a Colombian reader; a new handler that spends a model call or reaches COROS needs the `GATE_ON and not self.unlocked` re-check, because conditional rendering is not a guard |
 | `apps/brujula/brujula/ui/theme.py` (a colour, a ratio comment, a registry) | `tests/test_brujula_theme.py` + `docs/VISUAL-BRIEF-BRUJULA.md` + `assets/brujula.css`, which mirrors the tokens as custom properties. A new colour needs a line in `SURFACES`, `TYPE_ON`, `EDGE_ON` or `RULE_ONLY` and its measured ratio in a comment, or the coverage scan fails; a ratio is recomputed from the two colours it names, so editing a colour without editing its comment fails too |
+| `apps/brujula/brujula/ui/brand.py` (a dot state, the dial, the wordmark) | `tests/test_brujula_brand.py` + the mark's entries in this facts registry. `HALO_CLASS` must be defined in `assets/brujula.css` with its `prefers-reduced-motion` fallback, or the thinking dot silently stops moving; a new dot state has to be tellable apart from the other two by hue or by contrast, and a ratio written in this file is recomputed from the two colours it names |
 | `apps/brujula/brujula/agent/loop.py` (a stage, a budget, a wire model) | `tests/test_brujula_agent.py` + the guardrail table's `loop.*` rows. A new stage needs a name in `REOPENED` or it re-runs on every resume; a new `response_schema` needs a place in `loop.SCHEMAS` or nothing checks it for the `additionalProperties` 400; a check the bundle can block on needs a Spanish name in `loop._CHECKS_ES` or the person is told a check failed without being told which |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | `tests/test_brujula_app.py`; recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md`. Every value in that file is load-bearing for a running instance, not a preference |

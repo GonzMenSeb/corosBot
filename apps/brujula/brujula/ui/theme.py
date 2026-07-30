@@ -61,8 +61,8 @@ CARD = "#FFFFFF"
 # The one muted type colour. SUB is the obvious reach for it and cannot do the job.
 QUIET = "#6B6659"
 # A boundary somebody has to see: the composer's edge, a focused field, a card that has
-# to separate from the paper it sits on.
-#   EDGE on PAPER 3.47:1     EDGE on CARD 3.68:1
+# to separate from the paper it sits on, the mark's bezel around its own cream dial.
+#   EDGE on PAPER 3.47:1     EDGE on CARD 3.68:1     EDGE on BRASS_SOFT 3.17:1
 EDGE = "#89857A"
 
 # ── brass: the accent, and the needle ─────────────────────────────────────────
@@ -131,7 +131,7 @@ SURFACES: dict[str, str] = {
     "PAPER": "the page",
     "PAPER_DEEP": "the page's lower gradient stop, and an inset well",
     "CARD": "a product card, a chat bubble, the composer",
-    "BRASS_SOFT": "an accent chip, and the person's own bubble",
+    "BRASS_SOFT": "an accent chip, the person's own bubble, and the mark's dial",
     "DANGER_SOFT": "the refusal panel",
     "SUCCESS_SOFT": "the in-stock chip",
     "WARN_SOFT": "the notice that says the storefront is rate-limiting us",
@@ -163,7 +163,7 @@ TYPE_ON: dict[str, tuple[str, ...]] = {
 }
 
 EDGE_ON: dict[str, tuple[str, ...]] = {
-    "EDGE": ("PAPER", "CARD"),
+    "EDGE": ("PAPER", "CARD", "BRASS_SOFT"),
     "BRASS": ("PAPER", "CARD"),
     "DANGER": ("PAPER", "CARD"),
     "SUCCESS": ("PAPER", "CARD"),

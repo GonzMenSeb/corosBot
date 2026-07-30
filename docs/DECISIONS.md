@@ -592,3 +592,44 @@ instrument, not COROS's chrome: a warm ink slab, with secondary type tinted from
 hue because a neutral grey on warm black reads as dust. None of the paper tokens transfer —
 `BRASS on RAIL_BG 3.10:1` — and a test asserts they still cannot, so the rail cannot quietly
 drift light enough to make `RAIL_*` look redundant.
+
+### 2026-07-30 · The mark is drawn, and its amber means the throttle rather than a replay
+
+`brujula/ui/brand.py` draws the compass — a cream dial, a bezel somebody can see, four inert
+ticks and one brass needle off north with an index mark cut into the bezel at the same bearing —
+instead of setting `rx.icon("compass")`. Two reasons, and neither is taste. An icon set's glyph
+is a stroke weight and a palette we do not control, so it cannot honour `theme.SURFACES`'s own
+reservation of BRASS for "the mark's needle", and `EDGE on BRASS_SOFT 3.17:1` is what gives the
+mark a silhouette at all — `BRASS_SOFT on CARD 1.16:1` means a dial with no bezel is invisible on
+a white header. The needle sits off north because on north it reads as an arrow pointing
+somewhere, and Brújula's claim is that it measured first. `EDGE_ON` gained `BRASS_SOFT` in the
+same commit, because a bezel is an edge somebody has to see and theme.py declares every surface
+a colour is set on.
+
+**The presence dot's amber is the storefront throttle, not a fixture replay.** DecaBot's dot is
+green on live data and amber while replaying a fixture, and the plan asked for the same three
+states. `fixtures/` is never read by the running app here, so that amber could never light: it
+says the one thing that genuinely degrades an answer instead, `State.throttled` — COROS is
+rate-limiting us and what follows came off a partial read of the catalogue. `state.py` clears
+`throttled` in its `finally`, so the amber only appears mid-turn, beside the halo rather than
+instead of it. Idle is green only when `gemini.api_key()` returns something: a green dot in front
+of a process with no key promises an answer it cannot produce, and the demo finds that out
+mid-question.
+
+**The amber pip is hollow and the other two are solid, which is a measurement and not a slip.**
+`BRASS vs WARN_INK 1.17:1` — a solid dark-amber dot and a solid brass dot are the same dot at
+7px, in the same hue family. So the throttle pip is theme.py's own throttle notice in miniature,
+`WARN_SOFT` with a `WARN_INK` rim, and it spends its ring on that rim rather than on the surface
+colour the other two use to separate from the bezel. `tests/test_brujula_brand.py` measures the
+three pips against each other and requires 25° of hue or 1.8:1 of contrast between any two —
+green and brass pass on hue at 1.32:1, and a solid amber fails on both, which is how it was
+caught. Sixteen mutation probes were run against that file, each failing on the test that names
+it: the idle dot forced green, the throttle pip made solid, the needle turned back to north, an
+inline animation on the mark, a loose hex and the refusal red on the needle, the wordmark split
+to tint its accent, the dial announced to a screen reader, a drifted ratio, and six more.
+
+**The wordmark stays one text run.** DecaBot tints the second half of its name because
+"Deca|Bot" has a seam; "Brújula" has none, and tinting the ú would cut the word into three inline
+boxes with the seam inside a kerning pair. The brass lives on the needle instead, and the only
+two-tone in the lockup is the tagline, where COROS's name is set in COROS's own
+`--color-primary-darker` and ours in QUIET — the relationship stated in type.
