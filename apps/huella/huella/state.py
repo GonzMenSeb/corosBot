@@ -395,6 +395,11 @@ class State(rx.State):
     _raw_trace: list[dict[str, Any]] = []
     _bundle_text: str = ""
 
+    # How far into the bound sink the panel has rendered. A SEQUENCE NUMBER, not an index,
+    # so none of the three `bind_sink` sites has to remember to reset it: `trace._seq` never
+    # restarts, not even across `trace.reset()`, so every later event outranks it.
+    _drained_seq: int = 0
+
     is_thinking: bool = False
     status: str = ""
     throttled: bool = False
@@ -515,9 +520,15 @@ class State(rx.State):
         return "" if self.stale_days < 0 else f"hace {self.stale_days} días"
 
     def _drain(self, sink: list[TraceEvent]) -> bool:
-        if not sink:
+        """Reads what is new and leaves `sink` alone. That list is the object
+        `trace.current()` hands back, and `evidence.build` reads it back AFTER the
+        presentation call — so consuming it here is how five guardrails that ran and
+        passed come out the other side as five that never ran."""
+        fresh = [e for e in sink if e.seq > self._drained_seq]
+        if not fresh:
             return False
-        for event in sink:
+        self._drained_seq = fresh[-1].seq
+        for event in fresh:
             self.trace.append(
                 TraceRow(
                     seq=event.seq,
@@ -536,7 +547,6 @@ class State(rx.State):
                 stage = _STAGE_STATUS.get(event.event)
                 if stage is not None:
                     self.status = stage
-        sink.clear()
         return True
 
     # ── what the browser learns about the connection ──────────────────────────
