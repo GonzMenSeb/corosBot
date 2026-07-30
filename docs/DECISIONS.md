@@ -803,3 +803,27 @@ Found alongside it and fixed in the same commit: `catalog._get`'s refusal inside
 rendered `cooldown_remaining()` — time *left* — as "refused N s ago". The same number,
 described as its own opposite, in the string that reaches the trace panel and this script. A
 diagnostic that lies about time is expensive precisely when it is being read.
+
+### 2026-07-30 · The token endpoint is the one on the host that is not moving
+
+Strava exposes the token exchange at both `https://www.strava.com/oauth/token` and
+`https://www.strava.com/api/v3/oauth/token`. Measured 30 Jul 2026 by POSTing
+`grant_type=authorization_code` with a bogus `client_id` to each: both answered `400` with
+byte-identical bodies naming `client_id` invalid, so both are live and both process OAuth.
+Only the `/api/v3` form appears in the docs' curl examples, and there is a Strava community
+thread titled "'oauth/token' endpoint not working".
+
+`client.py` uses `/oauth/token`, and the reason is the migration rather than the docs. The
+1 Jun 2026 changelog entry moves the API base from `https://www.strava.com/api/v3` to
+`https://api-v3.strava.com` on 4 Jan 2027, and says the OAuth host does not move. So
+`/oauth/token` is the path that survives untouched and `/api/v3/oauth/token` is the one that
+has to be revisited. Both are recorded in `AGENTS.md` with the measurement, because the
+failure mode here is a reader comparing the code to the docs and "fixing" it.
+
+Worth recording how this entry came to exist. The registry originally said the token endpoint
+was `/oauth/token`; I read the docs, found only `/api/v3/oauth/token` in them, found the
+community thread, and rewrote the registry to say the existing value was **wrong** — then told
+the implementing lane to change it. None of that was a measurement. Two requests settled it in
+about a second and showed the original value was fine. The repo's standing rule is "never
+guess an API or payload shape — read the fixture, run the call, or read the source", and
+documentation plus a forum thread is none of the three.

@@ -245,12 +245,19 @@ not need a rested IP.
 Re-read from `developers.strava.com/docs/authentication` and `/docs/changelog` on
 **30 Jul 2026**, which corrected two entries that had been carried in from the plan.
 
-- **The token endpoint is `https://www.strava.com/api/v3/oauth/token`, not
-  `https://www.strava.com/oauth/token`.** `www.strava.com/oauth/*` is the *user-facing* half
-  — authorize and revoke live there — and every API call goes through `/api/v3`. Both grant
-  types (`authorization_code` and `refresh_token`) POST form-encoded to that one URL. The
-  wrong path is the plausible one and it is what this registry used to say; there is a Strava
-  community thread titled "'oauth/token' endpoint not working" for exactly this reason.
+- **Two token endpoints exist and BOTH work. `client.py` uses
+  `https://www.strava.com/oauth/token` deliberately.** Measured 30 Jul 2026, POSTing
+  `grant_type=authorization_code` with a bogus `client_id` to each: `/oauth/token` and
+  `/api/v3/oauth/token` returned byte-identical `400` bodies
+  (`{"message":"Bad Request","errors":[{"resource":"Application","field":"client_id","code":"invalid"}]}`),
+  so both are live and both process OAuth. The docs' curl examples show only
+  `/api/v3/oauth/token`, and there is a Strava community thread titled "'oauth/token'
+  endpoint not working" — but that is not what this measurement says, and the measurement is
+  what this registry records. **The reason to prefer the `/oauth/*` one is the migration:**
+  the 4 Jan 2027 base-URL change moves `/api/v3` to `api-v3.strava.com` and the changelog
+  says the OAuth host does not move, so `/oauth/token` is the path that does not have to
+  change. Do not "correct" it to `/api/v3/oauth/token` without re-measuring both.
+  Both grant types (`authorization_code` and `refresh_token`) POST form-encoded to it.
 - **Authorize `https://www.strava.com/oauth/authorize`; revoke
   `https://www.strava.com/oauth/revoke`.** Revoke replaced `POST /oauth/deauthorize`, which
   is retired 1 Jun 2027 — never call `deauthorize`. Scopes that exist: `read`, `read_all`,
@@ -483,9 +490,15 @@ below is a fact about `App.__call__` and nothing warns you when it changes.
   `App._add_cors(api_transformer)` runs on the line above the mount, `cors_allowed_origins`
   defaults to `("*",)`, and `_add_cors` passes `allow_credentials=True` — so under the default
   config `Origin: https://evil.example` came back as `access-control-allow-origin`, on the
-  callback, with credentials allowed. **`apps/huella/rxconfig.py` must pin
-  `cors_allowed_origins`**; phase 2 of the spike proved the one-line narrowing drops the foreign
-  mirror, keeps ours, and costs nothing — `/ping`, `/` and the websocket upgrade all still serve.
+  callback, with credentials allowed. **Both apps' `rxconfig.py` must pin
+  `cors_allowed_origins`, from `BRUJULA_ALLOWED_ORIGINS` / `HUELLA_ALLOWED_ORIGINS`** — read at
+  worker boot by `get_config()`, so unlike `api_url` it is a real runtime value and belongs in
+  the `.env` rather than baked into the bundle. The callback is what made this findable, but the
+  policy covers **every route either app serves**, so any site could make credentialed
+  cross-origin requests to Brújula's backend too and read the answers. DecaBot has the same
+  exposure and nobody narrowed it; that is not a reason to ship it twice more. Phase 2 of the
+  spike proved the narrowing drops the foreign mirror, keeps ours, and costs nothing —
+  `/ping`, `/` and the websocket upgrade all still serve.
   Strava's own redirect is unaffected either way: a top-level navigation carries no `Origin`, so
   CORS never applies to the request that matters. Pinned by
   `tests/test_contracts.py::TestReflexPutsItsOwnCorsPolicyOnOurRoute`.
