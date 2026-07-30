@@ -633,3 +633,61 @@ to tint its accent, the dial announced to a screen reader, a drifted ratio, and 
 boxes with the seam inside a kerning pair. The brass lives on the needle instead, and the only
 two-tone in the lockup is the tagline, where COROS's name is set in COROS's own
 `--color-primary-darker` and ours in QUIET — the relationship stated in type.
+
+### 2026-07-30 · The interface is checked against the palette, not just built from it
+
+`tests/test_brujula_theme.py` proves the palette measures what it claims. It cannot prove the
+interface uses it that way, and that half is where a measured palette actually fails: a token
+whose ratio was computed against `CARD` ends up on `BRASS_SOFT` in one component and nobody
+notices, because both look like "the light one". So `tests/test_brujula_ui.py` walks every
+rendered surface and resolves the pairs the way a browser does.
+
+**The walk runs over `Component.render()`, not over the component objects.** `rx.match` renders
+its cases at construction time, so an object walk loses every branch of every match in the tree
+— which would have been all four refusal panels and every per-level style on the audit rail. The
+rendered form is also what actually ships: a `css:({…})` string holding the declarations a
+browser will apply. A node's own `background` replaces what it inherited, a `_hover` background
+is a surface too so a colour on that node has to clear both, and an `rgba()` or a gradient
+resolves to no token at all — those subtrees are skipped rather than guessed at. A border is
+measured against what is BEHIND it, because an edge separates a box from the page; a border
+painted in the enclosing surface's own colour is a cutout, which is what the presence dot's ring
+needs and the only carve-out in the rule.
+
+**`EDGE_ON` gained `PAPER_DEEP` for `EDGE` and `BRASS`, measured at 3.15:1 and 5.03:1.** The page
+is a gradient into `PAPER_DEEP` — theme.py calls it "the page's lower gradient stop" and already
+declared `INK`, `GRAPHITE` and `QUIET` as type on it — but the edges every card and panel draws
+against it were never declared. Walking `app._shell()` rather than the column alone is what
+surfaced that, and the two pairs were computed with the same helper the theme's own suite
+recomputes them with. The alternative was dropping the gradient, which would have left half of
+`PAPER_DEEP`'s stated purpose dead.
+
+**Each refusal is a literal panel, selected by `rx.match` over components.** The tempting shape
+is one panel whose ink, fill and glyph are each an `rx.match` over `advice_kind`; the failure
+mode is that those three tables are independent, so an entry added to one and forgotten in
+another silently pairs an ink with a fill nobody measured it against. Written as four whole
+trees, a panel's ink is measured against that panel's own surface and against nothing else —
+`_panel()` takes both halves at once, and `_KINDS` is asserted to cover every `AdviceKind` that
+is not `recommend`, so the unnamed fallback stays unreachable.
+
+**Nothing on either surface is markdown.** DecaBot renders its model's half of the transcript
+through `rx.markdown` because its prompts answer in headings and bullet lists. Brújula's
+`prompts.py` forbids lists, prices and totals — those are cards — so every template and every
+generated reply is paragraphs, and `white_space="pre-wrap"` renders them correctly. That also
+closes a boundary rather than defending one: Reflex's markdown pulls in `rehype-raw`, so a typed
+`<img onerror=…>` would reach the DOM through the person's own bubble.
+
+**The evidence bundle's English stays on the rail.** `EvidenceBundle.blocking` holds sentences
+like "stock did not run" and `Check.detail` is the same register — engineering artifacts written
+to be read in a PR. `loop.py` already tells the person, in Spanish, which check blocked the
+answer. So the checklist renders the translated check name, outcome and a Spanish confidence
+phrase, and the raw reasons go to the audit rail, captioned as the verifier's own words. The rail
+is where that vocabulary is already at home: mono, English event names, raw payload lines. An
+AST scan asserts `State.blocking` is read by `trace_panel.py` and by nothing else — a text scan
+reported this decision's own prose, which is the failure a text scan always has here.
+
+Thirteen mutation probes were run against the new suite, each failing on the test that names it:
+words moved onto an unmeasured surface, a loose hex, a light token imported into the rail, the
+bundle's English put in the checklist, a refusal kind left without a panel, the refusal red spent
+on a rate limit, an icon-only control left unnamed, `Check.detail` rendered, a Var `class_name` on
+`rx.form`, a rail that ignores the header's height, minor units on a card, prose without its
+quote rule, and a waiting row with no live region.

@@ -62,11 +62,15 @@ CARD = "#FFFFFF"
 QUIET = "#6B6659"
 # A boundary somebody has to see: the composer's edge, a focused field, a card that has
 # to separate from the paper it sits on, the mark's bezel around its own cream dial.
-#   EDGE on PAPER 3.47:1     EDGE on CARD 3.68:1     EDGE on BRASS_SOFT 3.17:1
+# PAPER_DEEP is in here because the page really is a gradient into it: a card two thousand
+# pixels down a conversation is drawing its edge against the lower stop, not the upper one.
+#   EDGE on PAPER 3.47:1     EDGE on PAPER_DEEP 3.15:1     EDGE on CARD 3.68:1
+#   EDGE on BRASS_SOFT 3.17:1
 EDGE = "#89857A"
 
 # ── brass: the accent, and the needle ─────────────────────────────────────────
-#   BRASS on PAPER 5.55:1     BRASS on CARD 5.90:1     BRASS on BRASS_SOFT 5.07:1
+#   BRASS on PAPER 5.55:1     BRASS on PAPER_DEEP 5.03:1     BRASS on CARD 5.90:1
+#   BRASS on BRASS_SOFT 5.07:1
 #   BRASS_DEEP on PAPER 9.82:1     BRASS_DEEP on CARD 10.44:1     BRASS_DEEP on BRASS_SOFT 8.98:1
 #   ON_DARK on GRAPHITE 10.37:1     ON_DARK on GRAPHITE_DEEP 16.10:1     ON_DARK on INK 16.98:1
 #   ON_DARK on BRASS 5.90:1     ON_DARK on BRASS_DEEP 10.44:1
@@ -163,8 +167,8 @@ TYPE_ON: dict[str, tuple[str, ...]] = {
 }
 
 EDGE_ON: dict[str, tuple[str, ...]] = {
-    "EDGE": ("PAPER", "CARD", "BRASS_SOFT"),
-    "BRASS": ("PAPER", "CARD"),
+    "EDGE": ("PAPER", "PAPER_DEEP", "CARD", "BRASS_SOFT"),
+    "BRASS": ("PAPER", "PAPER_DEEP", "CARD"),
     "DANGER": ("PAPER", "CARD"),
     "SUCCESS": ("PAPER", "CARD"),
 }

@@ -387,6 +387,25 @@ All of these were run against `google-genai` 2.14.0 on **30 Jul 2026**.
   as a Python repr inside a JSON string. Passing `indent=` selects the pure-Python encoder,
   which goes through `isinstance` and survives — so removing `state.plain()` breaks a compact
   dump and silently passes an indented one. `plain()` runs regardless.
+- **`rx.match` renders its cases at construction time.** `Match.match_cases` holds rendered
+  dicts, not components, so any walk over a component tree — a test, a lint, an audit — loses
+  every branch of every match in it. Verified 30 Jul 2026. `tests/test_brujula_ui.py` therefore
+  walks `Component.render()`, which is also what actually ships: `props` as strings, `children`
+  / `true_value` / `false_value` / `match_cases` / `default` as the branches.
+- **`rx.form` cannot take a Var `class_name`; `rx.box` can.** Verified 30 Jul 2026:
+  `rx.form(…, class_name=rx.cond(...)).render()` raises `VarTypeError: Cannot convert Var …`,
+  because the Radix primitive wants a real string. A conditional class goes on a wrapper box —
+  `ui/gate.py` puts the entrance and the refusal shake there, and an AST check in
+  `tests/test_brujula_ui.py` keeps them off the form.
+- **An f-string over a Var is only safe in a child, never in a prop.** `f"1px solid {var}"`
+  produces a `<reflex.Var>…</reflex.Var>` sentinel string, which Reflex re-parses when it is
+  rendered as text and does not when it is a style value — so a conditional style prop has to
+  be the whole declaration per branch: `rx.cond(err, f"1px solid {DANGER}", f"1px solid {EDGE}")`.
+  Same for an `rx.match` resolver returning a `border` shorthand.
+- **The rendered tree escapes non-ASCII and reaches row fields through optional chaining.**
+  `aria_label="Contraseña"` arrives in the props as `Contrase\u00f1a`, and a `rx.foreach` row
+  field as `item_rx_state_?.["title"]`. Both matter to anything that greps the rendered output:
+  in a Spanish interface every second label carries an accent.
 - **`hmac.compare_digest` raises `TypeError` on non-ASCII `str`.** Comparing the passwords
   themselves therefore turns an accented password — in a Spanish app, the likely kind — into a
   500 rather than a refusal. `state._digest()` is what gets compared: hex, ASCII, equal
@@ -535,6 +554,7 @@ rendered only from data; prose carries only reasoning.
 | `apps/brujula/brujula/state.py` (a var, a caption, the gate) | `tests/test_brujula_state.py`. A caption key must be an event something actually emits or it can never fire; a new `RequirementKey` needs a word in `_REQUIREMENT_ES` and a new declared check needs one in `_CHECK_ES`, or the rail shows an English enum to a Colombian reader; a new handler that spends a model call or reaches COROS needs the `GATE_ON and not self.unlocked` re-check, because conditional rendering is not a guard |
 | `apps/brujula/brujula/ui/theme.py` (a colour, a ratio comment, a registry) | `tests/test_brujula_theme.py` + `docs/VISUAL-BRIEF-BRUJULA.md` + `assets/brujula.css`, which mirrors the tokens as custom properties. A new colour needs a line in `SURFACES`, `TYPE_ON`, `EDGE_ON` or `RULE_ONLY` and its measured ratio in a comment, or the coverage scan fails; a ratio is recomputed from the two colours it names, so editing a colour without editing its comment fails too |
 | `apps/brujula/brujula/ui/brand.py` (a dot state, the dial, the wordmark) | `tests/test_brujula_brand.py` + the mark's entries in this facts registry. `HALO_CLASS` must be defined in `assets/brujula.css` with its `prefers-reduced-motion` fallback, or the thinking dot silently stops moving; a new dot state has to be tellable apart from the other two by hue or by contrast, and a ratio written in this file is recomputed from the two colours it names |
+| `apps/brujula/brujula/ui/{chat,product,advice,trace_panel,gate}.py` | `tests/test_brujula_ui.py`, which walks the rendered tree of every entry point in that file's `ENTRIES` table — a new one belongs there or nothing checks it. A colour must be a token: a literal fails the scan, and a pair that is not in `theme.TYPE_ON` / `EDGE_ON` has to be added to `theme.py` **with its measured ratio** before it can be used. The rail may not import a light token and no light module may import a `RAIL_*` one. A new `AdviceKind` needs a row in `advice._KINDS`, a new `Confidence` a phrase in `advice._CONFIDENCE_ES`, a new `Outcome` a glyph in `advice._OUTCOME_ICON`. Every `bj-` class a component names must exist in `assets/brujula.css`, with its `prefers-reduced-motion` fallback if it animates. An icon-only control needs an `aria_label`; the bundle's English (`State.blocking`, `CheckRow.detail`) stays on the rail |
 | `apps/brujula/brujula/agent/loop.py` (a stage, a budget, a wire model) | `tests/test_brujula_agent.py` + the guardrail table's `loop.*` rows. A new stage needs a name in `REOPENED` or it re-runs on every resume; a new `response_schema` needs a place in `loop.SCHEMAS` or nothing checks it for the `additionalProperties` 400; a check the bundle can block on needs a Spanish name in `loop._CHECKS_ES` or the person is told a check failed without being told which |
 | anything Strava-scoped | `tests/test_strava.py` + `tests/test_privacy_boundary.py` — token atomicity and state isolation are release blockers |
 | `rxconfig.py` | `tests/test_brujula_app.py`; recompile the frontend; note the new URL in `docs/DEPLOY.md` and `docs/RUNBOOK.md`. Every value in that file is load-bearing for a running instance, not a preference |
