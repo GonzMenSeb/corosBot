@@ -41,3 +41,16 @@ Tested with an adversarial suite.
 One per-project Gemini quota, shared between Brújula and Huella. No public pool. Both apps read
 `vault_decabot_gemini_api_key` (same credential as DecaBot). Rate limiting is inherent to Gemini
 quota; the apps queue internally at the app level (no Traefik middleware, no per-IP queue).
+
+### 2026-07-30 · Import roots declared in pytest.ini, not per caller
+
+Supersedes the "use `PYTHONPATH=.:packages:apps/<name>` for tests" note in the monorepo-layout
+entry above. `pythonpath = . packages apps/brujula apps/huella` in `pytest.ini` is now the only
+declaration; no runner exports `PYTHONPATH` for a pytest command. The workflow copied from
+DecaBot carried `PYTHONPATH=.` — correct for a single-app repo, one root short of ours — so CI
+on PR #1 died at collection with `ModuleNotFoundError: No module named 'coros_core'` while
+`make check` was green. Two copies of a path list, one of them partial. `make check`/`make
+verify` now invoke pytest exactly as CI does, so local green means CI green. `PYPATH` survives
+in the Makefile for non-pytest entry points (`doctor`, `fixtures`); the Dockerfiles are
+untouched. Enforced by `TestPytestIniIsTheOnlyPlaceTheImportRootsAreDeclared` in
+`tests/test_layout.py`.

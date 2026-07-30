@@ -143,7 +143,10 @@ rendered only from data; prose carries only reasoning.
 - **Python 3.12, `from __future__ import annotations`, type-annotated.**
 - **Comments: absolutely minimal.** Only where a fact is genuinely counterintuitive.
   No docstring on every function; no comment restating the code.
-- **Run everything as `PYTHONPATH=. ./.venv/bin/python …`.**
+- **Run tests as `./.venv/bin/python -m pytest` — no `PYTHONPATH`.** `pythonpath` in
+  `pytest.ini` is the single declaration of the suite's import roots (`.`, `packages`,
+  both `apps/*`); a hand-rolled `PYTHONPATH=.` on a pytest command is how CI broke on
+  PR #1. Anything that is not pytest goes through `make`, which exports `PYPATH`.
 - **Never guess an API or a payload shape.** Read the fixture, run the call, or read the
   library source. Unfounded assumptions are the one unforgivable sin here.
 - **Double quotes, 4-space indent, soft wrap 88–100.**

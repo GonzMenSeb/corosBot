@@ -24,10 +24,14 @@ def tracked() -> set[str]:
     return set(out.stdout.splitlines())
 
 
-def addopts() -> str:
+def pytest_ini() -> configparser.SectionProxy:
     parser = configparser.ConfigParser()
     parser.read(ROOT / "pytest.ini")
-    return parser["pytest"]["addopts"]
+    return parser["pytest"]
+
+
+def addopts() -> str:
+    return pytest_ini()["addopts"]
 
 
 def requirements() -> list[str]:
@@ -60,9 +64,9 @@ class TestTheSharedCoreIsImportableWithoutAnApp:
     def test_coros_core_imports_on_its_own(self) -> None:
         assert importlib.import_module("coros_core") is not None, (
             "`import coros_core` failed.\n"
-            "packages/ is a path root, not a package: run through `make check`, which puts\n"
-            "packages/ on PYTHONPATH. The container gets the same name because the\n"
-            "Dockerfile copies packages/coros_core to /app/coros_core."
+            "packages/ is a path root, not a package: pytest.ini's pythonpath puts it on\n"
+            "sys.path. The container gets the same name because the Dockerfile copies\n"
+            "packages/coros_core to /app/coros_core."
         )
 
     @pytest.mark.parametrize("app", APPS)
@@ -70,7 +74,51 @@ class TestTheSharedCoreIsImportableWithoutAnApp:
         assert importlib.import_module(app) is not None, (
             f"`import {app}` failed from the repo root.\n"
             "One flat test suite drives both apps' state machines, so both app\n"
-            "directories must be on PYTHONPATH. See the PYPATH line in the Makefile."
+            "directories must be import roots. See pythonpath in pytest.ini."
+        )
+
+
+class TestPytestIniIsTheOnlyPlaceTheImportRootsAreDeclared:
+    """Every caller resolves imports through pytest.ini, or a caller that forgets a root
+    passes locally and fails in CI — which is exactly how CI broke on PR #1."""
+
+    @pytest.mark.parametrize("root", ("packages", "apps/brujula", "apps/huella"))
+    def test_the_root_is_declared(self, root: str) -> None:
+        assert root in pytest_ini()["pythonpath"].split(), (
+            f"{root} is missing from pythonpath in pytest.ini.\n"
+            "Collection then dies with ModuleNotFoundError for whatever lives there, no\n"
+            "matter which runner invoked pytest."
+        )
+
+    @pytest.mark.parametrize("path", (".github/workflows/test.yml", "infra/jenkins/Jenkinsfile"))
+    def test_no_ci_definition_hand_rolls_pythonpath_for_pytest(self, path: str) -> None:
+        file = ROOT / path
+        if not file.exists():
+            pytest.skip(f"{path} does not exist yet")
+        offenders = [
+            line.strip()
+            for line in file.read_text().splitlines()
+            if "PYTHONPATH" in line and "pytest" in line
+        ]
+        assert not offenders, (
+            f"{path} sets PYTHONPATH on a pytest command:\n  " + "\n  ".join(offenders) + "\n"
+            "A second copy of the import roots drifts from pytest.ini's — a partial copy\n"
+            "(`PYTHONPATH=.`) still runs, it just cannot import the core or either app."
+        )
+
+    @pytest.mark.parametrize("target", ("check", "verify"))
+    def test_the_make_target_invokes_pytest_the_way_ci_does(self, target: str) -> None:
+        # -n resolves $(PY)-style indirection, which a grep over the Makefile would miss.
+        recipe = subprocess.run(
+            ["make", "-C", str(ROOT), "-n", target],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert "PYTHONPATH" not in recipe, (
+            f"`make {target}` exports PYTHONPATH:\n  {recipe.strip()}\n"
+            "Then a local run and a CI run resolve imports by different rules, and green\n"
+            "here stops meaning green there. Import roots belong to pytest.ini alone."
         )
 
 

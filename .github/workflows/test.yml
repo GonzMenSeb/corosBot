@@ -32,5 +32,7 @@ jobs:
       - run: pip install -r requirements.txt
 
       # pytest.ini already pins -m "not live"; passing it again keeps the intent local
-      # to this file rather than inherited from a config someone may edit.
-      - run: PYTHONPATH=. python -m pytest -m "not live"
+      # to this file rather than inherited from a config someone may edit. Import roots
+      # are not repeated here — pytest.ini's pythonpath owns them, so this command
+      # cannot drift out of sync with `make check`.
+      - run: python -m pytest -m "not live"

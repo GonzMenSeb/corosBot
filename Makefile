@@ -1,9 +1,11 @@
 # One flat test suite has to import the shared core AND both apps, and each app's own
 # package sits under apps/<name>/, so `.` alone is not enough. The Dockerfiles flatten
 # packages/coros_core to /app/coros_core, which keeps `import coros_core` identical in
-# the container.
+# the container. Scripts get the path from here; pytest gets it from pytest.ini's
+# pythonpath, so check/verify run byte-identically to CI.
 PYPATH := .:packages:apps/brujula:apps/huella
-PY := PYTHONPATH=$(PYPATH) ./.venv/bin/python
+VENV_PY := ./.venv/bin/python
+PY := PYTHONPATH=$(PYPATH) $(VENV_PY)
 .PHONY: setup check verify doctor fixtures dev-brujula dev-huella clean
 
 setup:
@@ -13,10 +15,10 @@ setup:
 	@echo "setup ok"
 
 check:
-	$(PY) -m pytest -m "not live" -q
+	$(VENV_PY) -m pytest -m "not live" -q
 
 verify:
-	$(PY) -m pytest -m live -q
+	$(VENV_PY) -m pytest -m live -q
 
 doctor:
 	@$(PY) scripts/doctor.py
