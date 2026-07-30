@@ -8,9 +8,15 @@ storefront's own units, and a spec claim in the reply nothing retrieved backs.
 
     PYTHONPATH=.:packages:apps/brujula ./.venv/bin/python scripts/verify_brujula.py
 
-Two checks below are LIVE and print a WARN instead of a FAIL when COROS's storefront is
-mid-lockout (AGENTS.md: 429s are IP-scoped and can outlast this whole run) — that is a
-known, long-lived condition, not a defect in what this script is checking.
+Two checks below are LIVE and downgrade to a WARN when COROS's storefront is mid-lockout
+(AGENTS.md: 429s are IP-scoped and can outlast this whole run) — a known, long-lived
+condition rather than a defect in what this script checks. **That excuse is granted only on
+evidence**: `throttle_evidence()` requires a `catalog.unavailable` event carrying
+`rate_limited` in the turn's own trace. Until 30 Jul 2026 it was granted on
+`advice_kind == "insufficient_evidence"` alone, which is what the bundle accepts whenever
+*any* check could not run — so a broken model, a misfired gate and a genuine empty
+retrieval were all being reported as a storefront lockout, with an empty detail, and this
+script would have called a wholly broken Brújula fine.
 """
 
 from __future__ import annotations
@@ -37,6 +43,34 @@ def warn(label: str, detail: str = "") -> None:
 
 def _pesos(display: str) -> int:
     return int(display.replace("$", "").replace(".", "").replace("-", "") or "0")
+
+
+def throttle_evidence(state: State) -> str:
+    """The refusal this run can be excused by, read out of the trace — or "" if there is none.
+
+    `insufficient_evidence` is not evidence of a lockout. It is what the bundle accepts
+    whenever a check could not run, so a model failure, a misfired gate and a retrieval that
+    legitimately found nothing all arrive here wearing the same face, and `state.blocking` is
+    empty in every one of them because the bundle ACCEPTED. Excusing the run on that alone is
+    a verifier that passes whatever it is handed — the exact failure the KB names in §5.2.2.
+    `catalog.unavailable` with `rate_limited` is the only thing that says COROS refused us.
+    """
+    for event in state._raw_trace:
+        if event.get("event") == "catalog.unavailable" and event.get("payload", {}).get(
+            "rate_limited"
+        ):
+            payload = event["payload"]
+            return f"HTTP {payload.get('status')} — {payload.get('detail')}"
+    return ""
+
+
+def unexplained(state: State) -> str:
+    """What to print when the turn did not answer and nothing in the trace excuses it."""
+    tail = [event.get("event", "?") for event in state._raw_trace[-6:]]
+    return (
+        f"advice_kind={state.advice_kind!r} error={state.error!r} "
+        f"blocking={list(state.blocking)} trace_tail={tail}"
+    )
 
 
 async def _absent_model() -> list[bool]:
@@ -87,10 +121,20 @@ async def _buy_nothing() -> list[bool]:
         pass
 
     if state.error or state.advice_kind == "insufficient_evidence":
-        warn(
-            "the catalogue could not be read this run — the documented storefront 429 "
-            "lockout (AGENTS.md), not a claim that buy-nothing is unreachable",
-            state.error or "; ".join(state.blocking),
+        throttled = throttle_evidence(state)
+        if throttled:
+            warn(
+                "COROS refused the catalogue read this run — not a claim that buy-nothing "
+                "is unreachable",
+                throttled,
+            )
+            return results
+        results.append(
+            check(
+                "the turn reached an answer at all",
+                False,
+                f"no catalog.unavailable in the trace, so nothing excuses this. {unexplained(state)}",
+            )
         )
         return results
 
@@ -115,13 +159,21 @@ async def _prices_and_unbacked_claims() -> list[bool]:
         pass
 
     if state.error or state.advice_kind == "insufficient_evidence":
-        warn(
-            "the catalogue could not be read this run — the documented storefront 429 "
-            "lockout (AGENTS.md), nothing to price-check or scrub-check",
-            state.error or "; ".join(state.blocking),
+        throttled = throttle_evidence(state)
+        if throttled:
+            warn("COROS refused the catalogue read this run — nothing to price-check", throttled)
+            return results
+        results.append(
+            check(
+                "the turn reached an answer at all",
+                False,
+                f"no catalog.unavailable in the trace, so nothing excuses this. {unexplained(state)}",
+            )
         )
         return results
     if not state.has_cards:
+        # A refusal here is a real answer, not a missing one — the absent-watch and
+        # buy-nothing paths both land with no cards on purpose.
         warn(f"the live turn answered {state.advice_kind!r} instead of a recommendation")
         return results
 

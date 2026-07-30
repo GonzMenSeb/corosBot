@@ -226,7 +226,7 @@ async def _get(url: str, what: str) -> requests.Response:
         raise CatalogUnavailable(
             url,
             429,
-            f"{what}: refused {cooldown_remaining():.0f} s ago and not polling",
+            f"{what}: refused, not polling for another {cooldown_remaining():.0f} s",
             retry_after=f"{cooldown_remaining():.0f}",
         )
 

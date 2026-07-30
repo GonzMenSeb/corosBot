@@ -517,6 +517,28 @@ class TestAnAbsentAnswerIsNotAnEmptyCatalog:
         assert "not polling" in caught.value.detail
         assert catalog.cooldown_remaining() > 0
 
+    async def test_the_refusal_inside_the_cooldown_reports_the_wait_not_an_age(self, storefront):
+        """`cooldown_remaining()` is time LEFT, and the detail used to render it as
+        "refused N s ago" — the same number, described as its own opposite. This detail is
+        what `catalog.unavailable` carries into the trace panel and into
+        `scripts/verify_brujula.py`, so a reader chasing an outage was being told the
+        refusal was older than it was. Cost a debugging cycle on 30 Jul 2026."""
+        storefront(_response(429, raw=b"local_rate_limited", **{"Retry-After": "60"}))
+        with pytest.raises(CatalogUnavailable):
+            await catalog.get_products()
+        with pytest.raises(CatalogUnavailable) as caught:
+            await catalog.get_products()
+
+        detail = caught.value.detail
+        assert "ago" not in detail, (
+            f"the cooldown detail says {detail!r}. cooldown_remaining() counts DOWN to the "
+            "retry, so describing it as an elapsed age states the opposite of the truth."
+        )
+        assert f"{catalog.cooldown_remaining():.0f}" in detail, (
+            f"the cooldown detail {detail!r} no longer carries the remaining wait. It is the "
+            "only place a reader learns how long the latch stays shut."
+        )
+
     async def test_a_dropped_connection_is_retried_and_then_succeeds(self, storefront):
         stub = storefront(
             requests.ConnectTimeout("connection to coros.com.co timed out"),

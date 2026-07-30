@@ -756,3 +756,50 @@ The remaining blocker on Huella's OAuth is unchanged and is Sebastian's: a regis
 with `https://huella.web.vespiridion.org/oauth/strava/callback` as the redirect URI. The spike is
 deliberately credential-free — its handler echoes the query string instead of exchanging it — so
 the serving question is answered while the registration is still pending.
+
+### 2026-07-30 · A verifier may excuse a run only on evidence, never on the shape of the answer
+
+`scripts/verify_brujula.py` is the only thing in the repo that runs a real turn — the test
+suite is offline by construction and `reflex export` proves the tree compiles without ever
+invoking a handler. So it is the last line, and it had a hole in it.
+
+Both live checks began with `if state.error or state.advice_kind == "insufficient_evidence"`,
+printed a WARN naming "the documented storefront 429 lockout (AGENTS.md)", and returned. The
+detail they printed was `state.error or "; ".join(state.blocking)`. In the real 429 case both
+of those are empty — the evidence bundle *accepts* `insufficient_evidence`, and an accepted
+bundle has nothing in `blocking`. So the script's own diagnosis printed with no evidence
+beside it, and it was reached by every path that fails to answer: a broken model, a misfired
+intent gate, a retrieval that legitimately found nothing, a turn that emitted no trace at
+all. Five PRs merged with this script reporting green. It would have reported green on a
+Brújula that never contacted COROS.
+
+This is the failure the knowledge base names directly — `Code As Agent Harness.pdf` §5.2.2,
+"if the verifier is weak, the agent will learn to optimize against the wrong signal", and its
+companion warning that an agent "may pass visible tests while exploiting weak or incomplete
+test suites". Here there was no agent optimizing against it, which is worse: nobody was
+adversarial and it still passed everything.
+
+The excuse now comes from `throttle_evidence()`, which walks the turn's own trace for a
+`catalog.unavailable` event carrying `rate_limited`. That event is emitted by
+`CatalogUnavailable.__init__` and carries the status, the URL and the cooldown detail, so the
+WARN prints what actually happened. Everything else that fails to answer is now a FAIL that
+reports `advice_kind`, `error`, `blocking` and the tail of the trace. The empty `blocking`
+list is deliberately in that output: it is the thing that proves the bundle accepted rather
+than blocked, which is the distinction that took a debugging cycle to see.
+
+`tests/test_verify_brujula.py` pins the judgement rather than the plumbing — the live checks
+reach the network and cannot be unit-tested, but *what counts as an excuse* is pure, and it
+is the part that was wrong. It loads the script by path on purpose: `scripts/` is not a
+package and must not become one, since adding a fourth `pythonpath` root to reach one helper
+would put every script name into the suite's import namespace.
+
+One of those tests exists in its current form because a mutation probe caught it being
+useless. Written the obvious way — a `model.error` event with a bare `{"status": 429}` — the
+"a rate limit from elsewhere is not an excuse" test passed even with the event-name check
+deleted, because the payload had no `rate_limited` key for the mutant to find. It now carries
+`rate_limited: True`, so only the event name can reject it. Six probes, six caught.
+
+Found alongside it and fixed in the same commit: `catalog._get`'s refusal inside the cooldown
+rendered `cooldown_remaining()` — time *left* — as "refused N s ago". The same number,
+described as its own opposite, in the string that reaches the trace panel and this script. A
+diagnostic that lies about time is expensive precisely when it is being read.
