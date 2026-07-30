@@ -242,20 +242,60 @@ not need a rested IP.
 
 ### Strava integration (Huella only)
 
-- **OAuth 2.0:** authorize endpoint `https://www.strava.com/oauth/authorize`, token
-  endpoint `https://www.strava.com/oauth/token`. Scopes: `read,activity:read_all,profile:read_all`.
+Re-read from `developers.strava.com/docs/authentication` and `/docs/changelog` on
+**30 Jul 2026**, which corrected two entries that had been carried in from the plan.
+
+- **The token endpoint is `https://www.strava.com/api/v3/oauth/token`, not
+  `https://www.strava.com/oauth/token`.** `www.strava.com/oauth/*` is the *user-facing* half
+  — authorize and revoke live there — and every API call goes through `/api/v3`. Both grant
+  types (`authorization_code` and `refresh_token`) POST form-encoded to that one URL. The
+  wrong path is the plausible one and it is what this registry used to say; there is a Strava
+  community thread titled "'oauth/token' endpoint not working" for exactly this reason.
+- **Authorize `https://www.strava.com/oauth/authorize`; revoke
+  `https://www.strava.com/oauth/revoke`.** Revoke replaced `POST /oauth/deauthorize`, which
+  is retired 1 Jun 2027 — never call `deauthorize`. Scopes that exist: `read`, `read_all`,
+  `profile:read_all`, `profile:write`, `activity:read`, `activity:read_all`,
+  `activity:write`. Huella asks for `read,activity:read_all,profile:read_all`.
+- **`redirect_uri` is validated against the app's "Authorization Callback Domain", not
+  against a full registered URI.** Verbatim: "Must be within the callback domain specified by
+  the application. `localhost` and `127.0.0.1` are white-listed." So local dev needs no
+  second registration and the dev port is free to move. Do not write exact-URI-match logic.
+- **The API base URL moves to `https://api-v3.strava.com` on 4 Jan 2027, and is not live
+  yet.** Until then it is `https://www.strava.com/api/v3`, spelled once as a module constant
+  so the migration is one line. A widely-circulated third-party summary gives the new host as
+  `www.api-v3.strava.com` with a Jun 2027 date; **both are wrong** — the changelog is the
+  source. The OAuth host does not move.
 - **Access tokens expire in 6 hours; a refresh invalidates the previous refresh token
-  immediately.** Persist the new pair atomically or the user is locked out. `_SESSIONS`
-  dict update is not atomic across a retry; use a lock.
+  immediately.** Verbatim: "Please expect that this value can change anytime you retrieve a
+  new access token", and once a new one is returned "the older code will no longer work" —
+  applications must "persist the refresh token contained in the response, and always use the
+  most recent refresh token." Persist the new pair atomically or the user is locked out with
+  no way back but a fresh authorization. `_SESSIONS` dict update is not atomic across a
+  retry; use a lock.
 - **Rate limits:** 200 requests per 15 minutes + 2000 per day (overall); 100 per 15 min +
   1000 per day (read endpoints). The API returns `X-RateLimit-*` and `X-ReadRateLimit-*`
-  headers. A 429 response means the request was refused, never silently drop it to an empty
-  list.
+  headers, each a comma-separated `15min,daily` pair. A 429 response means the request was
+  refused, never silently drop it to an empty list. Strava sends no `Retry-After`: the
+  15-minute windows are wall-clock quarter-hours, so the wait is computed to the next one.
 - **Activities have no `type` enum.** They carry a `sport_type` string which may be any of
   40+ values (e.g. `"AlpineSki"`, `"NordicSki"`, `"BackcountrySki"`, `"IceSkate"`,
   `"InlineSkate"`, `"RollerSki"`, `"Skateboarding"`, `"Snowboarding"`, `"Snowshoeing"`,
-  `"Trail Run"`, `"TrailRun"`, `"TrackRun"`, `"Run"`, `"Trail Run"`, …). The model must
-  not invent categories.
+  `"Trail Run"`, `"TrailRun"`, `"TrackRun"`, `"Run"`, …). The model must not invent
+  categories, and **the list grows**: the changelog added Basketball, Cricket, Dance, Padel,
+  Physical Therapy and Volleyball on 30 Apr 2026. Parse it as `str`; an enum here is a
+  self-inflicted outage on Strava's next release.
+- **Deprecated 1 Sep 2026, so nothing may be built on them:** `/clubs/{id}/activities`,
+  `/clubs/{id}/admins`, `/clubs/{id}/members`, and `segments/explore` (restricted to an
+  approved Extended Access tier). `athlete/clubs` survives. Huella needs none of them.
+- **Standard Tier API access now requires an active paid Strava subscription** — 1 Jun 2026
+  for new developers, 30 Jun 2026 for existing ones, currently $11.99/month; developers who
+  were already active were offered three months free by emailed code. Strava's stated reason
+  is AI scraping, with developer applications up 448% year-to-date. **This is a blocker on a
+  person, not on code:** Huella's `live` Strava tests and the real OAuth round-trip in the
+  success criteria cannot run until the repo owner holds a subscription *and* has registered
+  an app. Everything else about Huella — the client, the privacy boundary, the agent, the UI,
+  the whole offline suite — is built and tested without it, and `tests/test_strava.py`'s live
+  half skips when `STRAVA_CLIENT_ID` is unset rather than failing.
 
 ### Gemini and the model client (`packages/coros_core/gemini.py`)
 
