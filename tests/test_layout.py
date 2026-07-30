@@ -7,6 +7,7 @@ import configparser
 import importlib
 import pathlib
 import re
+import shutil
 import subprocess
 
 import pytest
@@ -17,7 +18,26 @@ JENKINSFILE = ROOT / "infra" / "jenkins" / "Jenkinsfile"
 SHIPPING_STAGES = ("Build & Push", "Deploy", "Health")
 
 
+def needs(binary: str) -> None:
+    """Skip rather than fail when the tool a check is written around is absent.
+
+    Jenkins runs the Test stage inside `python:3.12-slim`, which ships neither `git` nor
+    `make`, so eight checks here died with `FileNotFoundError: 'git'` and took the whole
+    pipeline red on its first build — while GitHub Actions, which has both, was green on the
+    same commit. A check that cannot run is not a check that failed; that distinction is the
+    same one `evidence._held` draws and the one `loop._blocked` was corrected to respect.
+
+    A skip is only honest because the check is about the repository, not the container: `git
+    ls-files` says the same thing wherever git exists, so running it in one CI and not the
+    other loses nothing. The skip is loud in the summary, which is what stops it becoming a
+    way to make a real failure disappear.
+    """
+    if shutil.which(binary) is None:
+        pytest.skip(f"{binary} is not on PATH — this check needs it and cannot run here")
+
+
 def tracked() -> set[str]:
+    needs("git")
     out = subprocess.run(
         ["git", "-C", str(ROOT), "ls-files"],
         capture_output=True,
@@ -120,6 +140,7 @@ class TestPytestIniIsTheOnlyPlaceTheImportRootsAreDeclared:
 
     @pytest.mark.parametrize("target", ("check", "verify"))
     def test_the_make_target_invokes_pytest_the_way_ci_does(self, target: str) -> None:
+        needs("make")
         # -n resolves $(PY)-style indirection, which a grep over the Makefile would miss.
         recipe = subprocess.run(
             ["make", "-C", str(ROOT), "-n", target],
